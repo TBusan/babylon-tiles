@@ -1,0 +1,16 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      three-tile:
+        specifier: ../lib
+        version: link:../lib
+      three-tile-plugin:
+        specifier: ../plugin
+        version: link:../plugin
