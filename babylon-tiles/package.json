@@ -1,0 +1,21 @@
+{
+  "name": "babylon-tiles-workspace",
+  "version": "1.0.0",
+  "description": "Babylon.js tile map and terrain loading system",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter demo dev",
+    "build:lib": "pnpm --filter babylon-tile build",
+    "build:plugin": "pnpm --filter babylon-tile-plugin build",
+    "build": "pnpm build:lib && pnpm build:plugin"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}
+

@@ -1,0 +1,23 @@
+{
+  "name": "babylon-tile-demo",
+  "version": "1.0.0",
+  "description": "Babylon.js tile map demo",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.0.0",
+    "@babylonjs/loaders": "^7.0.0",
+    "babylon-tile": "workspace:*",
+    "babylon-tile-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.0"
+  }
+}
+
