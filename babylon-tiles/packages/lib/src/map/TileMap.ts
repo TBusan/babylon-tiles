@@ -7,9 +7,8 @@
 import { TransformNode, Scene, Camera, Vector3, Color3, Matrix } from "@babylonjs/core";
 import { ISource } from "../source";
 import { Tile } from "../tile";
-import { ITileLoader } from "../loader/ITileLoaders";
+import { ITileLoader, TileMapLoader } from "../loader";
 import { IProjection, ProjectFactory } from "./projection";
-import { TileMapLoader } from "./TileMapLoader";
 
 /** Map projection center longitude type */
 type ProjectCenterLongitude = 0 | 90 | -90;

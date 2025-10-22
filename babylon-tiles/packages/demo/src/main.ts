@@ -40,7 +40,7 @@ function registerLoaders() {
 function createMap(viewer: Plugin.BabylonViewer) {
   // Image data source
   const imgSource = Plugin.arcGisImgSource;
-  
+  debugger
   // DEM data source (optional, comment out for flat map)
   // const demSource = Plugin.arcGisDemSource;
 
@@ -127,6 +127,7 @@ function main() {
   // Register loaders
   registerLoaders();
 
+  debugger
   // Create viewer
   const viewer = initViewer();
 

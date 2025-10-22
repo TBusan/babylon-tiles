@@ -4,7 +4,8 @@
  * @date: 2025-10-21
  */
 
-import { ISource, ProjectionType } from "./ISource";
+import { ISource } from "./ISource";
+import { ProjectionType } from "../map/projection";
 
 /**
  * Tile source class
@@ -21,6 +22,9 @@ export class TileSource implements ISource {
   public isTMS?: boolean;
   public bounds?: [number, number, number, number];
   public _projectionBounds: [number, number, number, number];
+  
+  // Index signature to satisfy ISource interface
+  [key: string]: unknown;
 
   constructor(options: Partial<ISource> & { url: string; dataType: string }) {
     this.dataType = options.dataType;

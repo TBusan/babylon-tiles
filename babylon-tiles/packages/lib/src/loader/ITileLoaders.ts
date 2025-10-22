@@ -7,6 +7,7 @@
 import { Mesh, Material, VertexData } from "@babylonjs/core";
 import { ISource } from "../source";
 import { TileLoadingManager } from "./TileLoadingManager";
+import type { IProjection } from "../map/projection";
 
 export type BoundsType = [number, number, number, number];
 
@@ -63,6 +64,8 @@ export interface ITileLoader {
   demSource: ISource | undefined;
   /** Projection ID */
   projectionID: string;
+  /** Map projection */
+  projection: IProjection;
   /** Map background material */
   backgroundMaterial: Material;
   /** Lat/lon bounds */

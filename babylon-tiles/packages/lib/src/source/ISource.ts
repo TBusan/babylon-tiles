@@ -4,8 +4,7 @@
  * @date: 2025-10-21
  */
 
-/** Project ID */
-export type ProjectionType = "3857" | "4326";
+import { ProjectionType } from "../map/projection";
 
 /**
  * Source interface

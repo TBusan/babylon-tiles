@@ -5,6 +5,5 @@
  */
 
 export * from "./TileMap";
-export * from "./TileMapLoader";
 export * from "./projection";
 

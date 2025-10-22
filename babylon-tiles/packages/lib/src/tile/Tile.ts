@@ -75,7 +75,23 @@ export class Tile extends TransformNode {
   /** Is tile in frustum */
   public get inFrustum(): boolean {
     if (!this._bbox || !this._root.getScene().activeCamera) return false;
-    return this._root.getScene().activeCamera!.isInFrustum(this._model || this);
+    // If we have a model mesh, check it directly; otherwise check the bounding box
+    if (this._model) {
+      return this._root.getScene().activeCamera!.isInFrustum(this._model);
+    }
+    return this._bbox ? this._root.getScene().activeCamera!.isInFrustum(this._bbox) : false;
+  }
+
+  /** Implementation of ICullable.isInFrustum for Babylon.js */
+  public isInFrustum(frustumPlanes: any): boolean {
+    return this.inFrustum;
+  }
+
+  /** Implementation of ICullable.isCompletelyInFrustum for Babylon.js */
+  public isCompletelyInFrustum(frustumPlanes: any): boolean {
+    // For now, we'll use the same logic as isInFrustum
+    // This can be refined later for more precise culling
+    return this.inFrustum;
   }
 
   /** Is leaf tile */
@@ -101,7 +117,7 @@ export class Tile extends TransformNode {
   // Should update geometry
   private _updateGeometry = false;
 
-  private get _isDirty(): boolean {
+  private get _needsUpdate(): boolean {
     return !!this.model && (this._updateMaterial || this._updateGeometry);
   }
 
@@ -169,8 +185,8 @@ export class Tile extends TransformNode {
       }
 
       // Update dirty tile
-      if (this._isDirty && this.inFrustum) {
-        const childrenUpdated = !this.subTiles?.some((child) => child._isDirty);
+      if (this._needsUpdate && this.inFrustum) {
+        const childrenUpdated = !this.subTiles?.some((child) => child._needsUpdate);
         if (childrenUpdated) {
           this._startUpdate(loader);
           return;
