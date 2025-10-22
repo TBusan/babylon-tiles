@@ -9,13 +9,13 @@ import * as BT from "babylon-tile";
 import * as Plugin from "babylon-tile-plugin";
 
 // Register loaders
-function registerLoaders() {
+function registerLoaders(viewer: Plugin.BabylonViewer) {
   console.log("======================================================");
   console.log(`Babylon Tiles V${BT.version}`);
   console.log("======================================================");
 
-  // Register image loader
-  const imgLoader = new BT.TileImageLoader();
+  // Register image loader with scene
+  const imgLoader = new BT.TileImageLoader(viewer.scene);
   BT.registerImgLoader(imgLoader);
 
   // Register flat geometry loader
@@ -124,12 +124,12 @@ function main() {
     document.querySelector("#loading")?.classList.add("hidden");
   }, 1000);
 
-  // Register loaders
-  registerLoaders();
-
   debugger
   // Create viewer
   const viewer = initViewer();
+
+  // Register loaders (需要先创建 viewer 才能传递 scene)
+  registerLoaders(viewer);
 
   // Create map
   const map = createMap(viewer);

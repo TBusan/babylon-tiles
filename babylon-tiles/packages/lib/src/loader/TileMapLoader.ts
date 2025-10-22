@@ -23,6 +23,7 @@ export class TileMapLoader implements ITileLoader {
   public backgroundMaterial: StandardMaterial;
   public bounds: BoundsType = [-180, -90, 180, 90];
   public debug = 0;
+  public scene: Scene;
 
   private _downloadingThreads = 0;
 
@@ -34,11 +35,12 @@ export class TileMapLoader implements ITileLoader {
     return this.projection.ID;
   }
 
-  constructor() {
+  constructor(scene: Scene) {
+    this.scene = scene;
     this.manager = new TileLoadingManager();
     this.imgSource = [];
     this.projection = ProjectFactory.createFromID("3857");
-    this.backgroundMaterial = new StandardMaterial("background");
+    this.backgroundMaterial = new StandardMaterial("background", scene);
     this.backgroundMaterial.diffuseColor = new Color3(0.5, 0.5, 0.5);
   }
 
@@ -50,7 +52,7 @@ export class TileMapLoader implements ITileLoader {
 
     try {
       // Create mesh
-      const mesh = new Mesh(`tile-${params.z}-${params.x}-${params.y}`);
+      const mesh = new Mesh(`tile-${params.z}-${params.x}-${params.y}`, this.scene);
 
       // Load geometry
       const geometry = await this.loadGeometry(params);
@@ -123,6 +125,11 @@ export class TileMapLoader implements ITileLoader {
     if (!loader) {
       console.warn(`No material loader found for type: ${source.dataType}`);
       return null;
+    }
+
+    // Set scene for loader if it's a TileImageLoader
+    if ('scene' in loader && !loader.scene) {
+      (loader as any).scene = this.scene;
     }
 
     try {

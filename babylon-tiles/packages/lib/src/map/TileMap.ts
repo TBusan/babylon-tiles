@@ -160,7 +160,7 @@ export class TileMap extends TransformNode {
     super("map", params.scene);
     
     const {
-      loader = new TileMapLoader(),
+      loader = new TileMapLoader(params.scene),
       rootTile = new Tile(0, 0, 0, params.scene),
       minLevel = 2,
       maxLevel = 20,
