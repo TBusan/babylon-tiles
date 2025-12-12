@@ -78,9 +78,31 @@ export class Tile extends TransformNode {
 
   /** Distance ratio for LOD evaluation */
   public get distRatio() {
-    const distToCamera = Vector3.Distance(this._checkPoint, this._root.getScene().activeCamera!.position);
+    // Use cameraWorldPosition (updated in root tile's update) instead of camera.position directly
+    // Matching three-tile: cameraWorldPosition.distanceTo(this._checkPoint)
+    const distToCamera = Vector3.Distance(this._checkPoint, cameraWorldPosition);
+    
+    // Ensure _sizeInWorld is valid
+    if (this._sizeInWorld <= 0) {
+      console.warn(`[Tile distRatio] Invalid _sizeInWorld: ${this._sizeInWorld} for tile ${this.z}/${this.x}/${this.y}`);
+      return Infinity;
+    }
+    
     const ratio = distToCamera / this._sizeInWorld;
     const finalRatio = this.inFrustum ? ratio * 0.8 : ratio * 2;
+    
+    // Debug for root tile
+    if (this.z === 0 && Math.abs(finalRatio) < 0.01) {
+      console.log(`[Tile distRatio] Debug for root tile:`, {
+        distToCamera: distToCamera.toFixed(2),
+        sizeInWorld: this._sizeInWorld.toFixed(2),
+        ratio: ratio.toFixed(6),
+        inFrustum: this.inFrustum,
+        finalRatio: finalRatio.toFixed(6),
+        checkPoint: this._checkPoint.asArray(),
+        cameraPos: cameraWorldPosition.asArray()
+      });
+    }
     
     return finalRatio;
   }
@@ -154,6 +176,11 @@ export class Tile extends TransformNode {
     this.x = x;
     this.y = y;
     this.z = z;
+    
+    // In Three.js, up.set(0, 0, 1) rotates tiles to XZ plane (Z-axis up)
+    // In Babylon.js, tiles inherit rotation from parent TileMap, so no need to rotate here
+    // But we ensure matrix is computed
+    this.computeWorldMatrix(true);
   }
 
   /**
@@ -242,14 +269,33 @@ export class Tile extends TransformNode {
       currentCamera = camera;
     }
 
-    // Compute tile size, bounding box
+    // Compute tile size, bounding box (matching three-tile: must compute before checking inFrustum)
     if (this._sizeInWorld < 0) {
       this.computeTileSize(loader.debug);
     }
 
     // Download or update tile (only if in frustum or at min level)
-    // Matching three-tile: only load tiles that are in frustum or at min level
-    const shouldLoad = this.z >= minLevel && loader.downloadingThreads < MAXTHREADS && (this.inFrustum || this.z <= minLevel);
+    // Matching three-tile: if (this.z >= minLevel && loader.downloadingThreads < MAXTHREADS)
+    // Note: three-tile doesn't check inFrustum in shouldLoad condition, only checks downloadingThreads
+    // The frustum check is done in LOD logic, not in loading logic
+    const shouldLoad = this.z >= minLevel && loader.downloadingThreads < MAXTHREADS;
+    
+    // Debug for child tiles to understand why they're not loading
+    if (this.z > 0 && !this.model && this.parent instanceof Tile) {
+      console.log(`[Tile update] Child tile ${this.z}/${this.x}/${this.y} shouldLoad check:`, {
+        z: this.z,
+        minLevel: minLevel,
+        zGteMinLevel: this.z >= minLevel,
+        downloadingThreads: loader.downloadingThreads,
+        maxThreads: MAXTHREADS,
+        inFrustum: this.inFrustum,
+        zLteMinLevel: this.z <= minLevel,
+        shouldLoad: shouldLoad,
+        sizeInWorld: this._sizeInWorld,
+        hasBbox: !!this._bbox
+      });
+    }
+    
     if (shouldLoad) {
       // Download tile
       if (!this.model) {
@@ -302,6 +348,8 @@ export class Tile extends TransformNode {
     }
     
     // 2. Create children if leaf and conditions met
+    // Matching three-tile's LODEvaluate exactly:
+    // tile.isLeaf && tile.inFrustum && tile.z < maxLevel && distRatio < threshold && (tile.showing || tile.z <= minLevel)
     const shouldCreate = this.isLeaf && 
                          currentInFrustum && 
                          this.z < maxLevel && 
@@ -310,11 +358,19 @@ export class Tile extends TransformNode {
     
     // Debug LOD conditions for root tile
     if (this.z === 0) {
-      const camera = this._root.getScene().activeCamera;
-      const distToCamera = camera ? Vector3.Distance(this._checkPoint, camera.position) : 0;
-      console.log(`[Tile LOD] z=${this.z}, distRatio=${currentDistRatio.toFixed(2)}, LODThreshold=${LODThreshold}, inFrustum=${currentInFrustum}, maxLevel=${maxLevel}, hasModel=${!!this.model}, hasSubTiles=${!!this.subTiles}, showing=${this.showing}, isLeaf=${this.isLeaf}`);
-      console.log(`[Tile LOD] Camera distance: ${distToCamera.toFixed(2)}, tile size: ${this._sizeInWorld.toFixed(2)}, distRatio: ${currentDistRatio.toFixed(2)}`);
-      console.log(`[Tile LOD] Should create children: ${shouldCreate}`);
+      const distToCamera = Vector3.Distance(this._checkPoint, cameraWorldPosition);
+      console.log(`[Tile LOD] z=${this.z}, distRatio=${currentDistRatio.toFixed(6)}, LODThreshold=${LODThreshold}, inFrustum=${currentInFrustum}, maxLevel=${maxLevel}, hasModel=${!!this.model}, hasSubTiles=${!!this.subTiles}, showing=${this.showing}, isLeaf=${this.isLeaf}`);
+      console.log(`[Tile LOD] Camera distance: ${distToCamera.toFixed(2)}, tile size: ${this._sizeInWorld.toFixed(2)}, distRatio: ${currentDistRatio.toFixed(6)}`);
+      console.log(`[Tile LOD] Should create children: ${shouldCreate}, breakdown:`, {
+        isLeaf: this.isLeaf,
+        inFrustum: currentInFrustum,
+        zLessThanMaxLevel: this.z < maxLevel,
+        distRatioLessThanThreshold: currentDistRatio < LODThreshold,
+        showingOrZLeMinLevel: (this.showing || this.z <= minLevel),
+        showing: this.showing,
+        z: this.z,
+        minLevel: minLevel
+      });
     }
     
     if (shouldCreate) {
@@ -335,6 +391,16 @@ export class Tile extends TransformNode {
           }
           console.log(`[Tile LOD] Created child tile ${child.z}/${child.x}/${child.y}, parent=${child.parent?.name}`);
         });
+        
+        // Update visibility after creating children
+        // Root tile should hide when children are created (will show again when children are loaded)
+        if (this.model) {
+          this.showing = false; // Hide parent when children are created
+        }
+        
+        // Note: In three-tile, children are updated in the recursive call at the end of update()
+        // We don't immediately update children here - they will be updated in the recursive loop
+        // This matches three-tile's behavior: child.updateMatrixWorld() is called, but not child.update()
       }
     } 
     // 3. Remove children if not leaf and conditions met (matching three-tile logic exactly)
@@ -410,6 +476,7 @@ export class Tile extends TransformNode {
 
   /**
    * Check if 4 sibling tiles are all loaded
+   * Matching three-tile's _checkVisible logic exactly
    */
   private _checkVisible() {
     const parent = this.parent;
@@ -424,10 +491,9 @@ export class Tile extends TransformNode {
       } else {
         this.showing = true;
       }
-    } else {
-      // Root tile (parent is TileMap, not Tile) - always show when loaded
-      this.showing = true;
     }
+    // Note: In three-tile, _checkVisible doesn't handle root tile case
+    // Root tile's showing is managed elsewhere
     return this;
   }
 
@@ -450,27 +516,22 @@ export class Tile extends TransformNode {
     // The mesh will be removed from scene rootNodes and added as child of this Tile
     this._model.parent = this;
     
+    // Update mesh world matrix to ensure correct bounding box calculation
+    this._model.computeWorldMatrix(true);
+    
     // Update mesh bounding info (matching three-tile: this._model.geometry.computeBoundingBox())
     if (this._model.geometry) {
       this._model.refreshBoundingInfo();
       const boundingInfo = this._model.getBoundingInfo();
       if (boundingInfo) {
-        // Set _checkPoint.y to the maximum height (z) of the geometry bounding box
-        // Matching three-tile: this._checkPoint.y = this._model.geometry.boundingBox?.max.z || 0;
-        // In Babylon.js, after rotation to xz plane, height is in z-axis in local coordinates
-        // But in world coordinates after rotation, height is in z-axis
-        // We need to get the local bounding box max z, then transform it to world
-        const localBoundingBox = boundingInfo.boundingBox;
-        // Get the local maximum z coordinate (height in local space)
-        // After rotation, local z becomes world y (or z, depending on rotation)
-        // For now, use the world bounding box max z as the height
-        const worldMax = localBoundingBox.maximumWorld;
-        // In three-tile, after rotateX(-PI/2), the geometry's max.z (local) becomes the height
-        // In world coordinates, this should be the max z of the world bounding box
-        // But _checkPoint.y is set to this value, which suggests it's in a different coordinate system
-        // Let's use the world max z as the height
-        this._checkPoint.y = worldMax.z || 0;
-        console.log(`[Tile] Set _checkPoint.y to ${this._checkPoint.y} for tile ${this.z}/${this.x}/${this.y} (from world bounding box max z: ${worldMax.z})`);
+        // Set _checkPoint.y to the maximum height
+        // In three-tile: this._checkPoint.y = this._model.geometry.boundingBox?.max.z || 0;
+        // In three-tile, after up.set(0,0,1), the geometry is in XZ plane, so height is in local Z
+        // In Babylon.js, after rotation.x = -PI/2, local Z becomes world Y
+        // So we use worldMax.y as the height
+        const worldMax = boundingInfo.boundingBox.maximumWorld;
+        this._checkPoint.y = worldMax.y || 0;
+        console.log(`[Tile] Set _checkPoint.y to ${this._checkPoint.y} for tile ${this.z}/${this.x}/${this.y} (from world bounding box max y: ${worldMax.y})`);
       }
     }
     
@@ -493,13 +554,17 @@ export class Tile extends TransformNode {
     this._model.setEnabled(true);
     
     // Check visibility and set showing
+    // Matching three-tile: this.isLeaf && this._checkVisible();
+    // Only call _checkVisible for leaf tiles
+    // For root tile (z=0), if it's a leaf (no children yet), ensure showing is true
     if (this.isLeaf) {
       this._checkVisible();
-      console.log(`[Tile] After _checkVisible for tile ${this.z}/${this.x}/${this.y}, showing=${this.showing}, model.isVisible=${this.model?.isVisible}, model.parent=${this.model?.parent?.name}, tile.parent=${this.parent?.name}`);
-    } else {
-      // For non-leaf tiles, also set showing
+    } else if (this.z === 0 && !this.subTiles) {
+      // Root tile without children should be visible
       this.showing = true;
     }
+    
+    console.log(`[Tile] After load for tile ${this.z}/${this.x}/${this.y}, showing=${this.showing}, isLeaf=${this.isLeaf}, model.isVisible=${this.model?.isVisible}`);
     
     // Log mesh details for debugging
     if (this._model) {
@@ -537,15 +602,18 @@ export class Tile extends TransformNode {
     this._isLoading = true;
     this._model = await loader.update(this.model, this, this._updateMaterial, this._updateGeometry);
     
+    // Update mesh world matrix
+    this._model.computeWorldMatrix(true);
+    
     // Update mesh bounding info (matching three-tile: this.model.geometry.computeBoundingBox())
     if (this._model.geometry) {
       this._model.refreshBoundingInfo();
       const boundingInfo = this._model.getBoundingInfo();
       if (boundingInfo) {
-        // Set _checkPoint.y to the maximum height (z) of the geometry bounding box
-        // Matching three-tile: this._checkPoint.y = this.model.geometry.boundingBox?.max.z || 0;
-        const localMax = boundingInfo.boundingBox.maximumWorld;
-        this._checkPoint.y = localMax.z || 0;
+        // Set _checkPoint.y to the maximum height
+        // After rotation.x = -PI/2, local Z becomes world Y
+        const worldMax = boundingInfo.boundingBox.maximumWorld;
+        this._checkPoint.y = worldMax.y || 0;
       }
     }
     

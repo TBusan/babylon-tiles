@@ -10,6 +10,19 @@ import { Tile } from "../tile";
 import { ITileLoader, TileMapLoader } from "../loader";
 import { IProjection, ProjectFactory } from "./projection";
 
+/** Simple clock for timing updates */
+class Clock {
+  private _startTime: number = performance.now();
+  
+  public getElapsedTime(): number {
+    return (performance.now() - this._startTime) / 1000; // Convert to seconds
+  }
+  
+  public start(): void {
+    this._startTime = performance.now();
+  }
+}
+
 /** Map projection center longitude type */
 type ProjectCenterLongitude = 0 | 90 | -90;
 
@@ -43,6 +56,9 @@ export class TileMap extends TransformNode {
 
   /** Tile tree update interval (ms) */
   public updateInterval = 100;
+
+  /** Map update clock (for controlling update rate) */
+  private readonly _mapClock = new Clock();
 
   /** Root tile */
   public readonly rootTile: Tile;
@@ -182,6 +198,12 @@ export class TileMap extends TransformNode {
     this.rootTile = rootTile;
     this.rootTile.parent = this;
 
+    // In Three.js, up.set(0, 0, 1) rotates the map to XZ plane (Z-axis up)
+    // In Babylon.js (left-handed, Y-up), we need to rotate -90° around X-axis to match
+    // This rotates from XY plane to XZ plane
+    this.rotation.x = -Math.PI / 2;
+    this.computeWorldMatrix(true);
+
     bounds && (this.loader.bounds = bounds);
     this.debug = this.loader.debug = debug;
     this.lon0 = lon0;
@@ -202,22 +224,16 @@ export class TileMap extends TransformNode {
 
   /**
    * Model update callback, called every frame
+   * Matching three-tile's update logic with clock-based rate limiting
    */
   public update(camera: Camera) {
-    if (this.autoUpdate) {
-      // Add first-time log
-      if (!this._updateCalled) {
-        console.log("[TileMap] First update call", {
-          camera,
-          minLevel: this.minLevel,
-          maxLevel: this.maxLevel,
-          LODThreshold: this.LODThreshold,
-          rootTile: this.rootTile,
-          loader: this.loader
-        });
-        this._updateCalled = true;
-      }
-      
+    if (!this.autoUpdate) {
+      return;
+    }
+    
+    const elapseTime = this._mapClock.getElapsedTime();
+    // Control tile tree update rate (matching three-tile)
+    if (elapseTime > this.updateInterval / 1000) {
       this.rootTile.update({
         camera,
         loader: this.loader,
@@ -225,10 +241,9 @@ export class TileMap extends TransformNode {
         maxLevel: this.maxLevel,
         LODThreshold: this.LODThreshold,
       });
+      this._mapClock.start();
     }
   }
-  
-  private _updateCalled = false;
 
   /**
    * Reload map data
