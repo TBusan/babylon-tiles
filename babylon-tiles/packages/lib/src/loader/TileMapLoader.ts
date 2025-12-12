@@ -48,25 +48,45 @@ export class TileMapLoader implements ITileLoader {
    * Load tile data
    */
   public async load(params: TileCoords): Promise<Mesh> {
+    console.log(`[TileMapLoader] Loading tile ${params.z}/${params.x}/${params.y}`);
     this._downloadingThreads++;
 
     try {
       // Create mesh
       const mesh = new Mesh(`tile-${params.z}-${params.x}-${params.y}`, this.scene);
+      console.log(`[TileMapLoader] Created mesh for tile ${params.z}/${params.x}/${params.y}`);
 
       // Load geometry
       const geometry = await this.loadGeometry(params);
       if (geometry) {
         geometry.applyToMesh(mesh);
+        console.log(`[TileMapLoader] Applied geometry to tile ${params.z}/${params.x}/${params.y}`);
       }
 
       // Load material
       const material = await this.loadMaterial(params);
       if (material) {
         mesh.material = material;
+        console.log(`[TileMapLoader] Applied material to tile ${params.z}/${params.x}/${params.y}`);
       } else {
         mesh.material = this.backgroundMaterial;
+        console.log(`[TileMapLoader] Applied background material to tile ${params.z}/${params.x}/${params.y}`);
       }
+
+      // Ensure mesh is visible and enabled
+      mesh.isVisible = true;
+      mesh.setEnabled(true);
+      
+      console.log(`[TileMapLoader] Mesh details:`, {
+        name: mesh.name,
+        isVisible: mesh.isVisible,
+        isEnabled: mesh.isEnabled(),
+        position: mesh.position.asArray(),
+        scaling: mesh.scaling.asArray(),
+        hasGeometry: !!mesh.geometry,
+        hasMaterial: !!mesh.material,
+        verticesCount: mesh.getTotalVertices()
+      });
 
       return mesh;
     } finally {

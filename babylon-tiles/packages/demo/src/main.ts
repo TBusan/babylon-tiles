@@ -53,8 +53,8 @@ function createMap(viewer: Plugin.BabylonViewer) {
     // demSource: demSource,
     // Map projection center longitude
     lon0: 0,
-    // Minimum zoom level
-    minLevel: 2,
+    // Minimum zoom level (changed from 2 to 0 to allow rootTile to load)
+    minLevel: 0,
     // Maximum zoom level
     maxLevel: 18,
     // Map lat/lon bounds (optional)
@@ -63,10 +63,21 @@ function createMap(viewer: Plugin.BabylonViewer) {
     debug: 0,
   });
 
+  // 🔧 FIX: Increase LOD threshold to match the distance ratio
+  // distRatio is around 430, so we need a much larger threshold
+  map.LODThreshold = 500;
+
   // Rotate map to horizontal plane
   map.rotation.x = -Math.PI / 2;
 
   console.log("Map created successfully!");
+  console.log("Map details:", {
+    position: map.position.asArray(),
+    rotation: map.rotation.asArray(),
+    scaling: map.scaling.asArray(),
+    rootTilePosition: map.rootTile.position.asArray(),
+    rootTileScaling: map.rootTile.scaling.asArray()
+  });
 
   return map;
 }
@@ -76,12 +87,21 @@ function initViewer() {
   const viewer = new Plugin.BabylonViewer("renderCanvas");
 
   // Set initial camera position
+  // 🔧 FIX: Reduce camera distance to get better LOD behavior
   viewer.setCameraPosition(
     -Math.PI / 2,  // alpha (longitude)
     Math.PI / 4,   // beta (latitude)
-    5000000,       // radius (distance)
+    1000,       // radius (distance) - reduced from 5000000
     Vector3.Zero() // target
   );
+
+  console.log("Camera details:", {
+    position: viewer.camera.position.asArray(),
+    target: viewer.camera.target.asArray(),
+    radius: viewer.camera.radius,
+    alpha: viewer.camera.alpha,
+    beta: viewer.camera.beta
+  });
 
   return viewer;
 }

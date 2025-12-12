@@ -69,17 +69,31 @@ export class Tile extends TransformNode {
   public get distRatio() {
     const distToCamera = Vector3.Distance(this._checkPoint, this._root.getScene().activeCamera!.position);
     const ratio = distToCamera / this._sizeInWorld;
-    return this.inFrustum ? ratio * 0.8 : ratio * 2;
+    const finalRatio = this.inFrustum ? ratio * 0.8 : ratio * 2;
+    
+    return finalRatio;
   }
 
   /** Is tile in frustum */
   public get inFrustum(): boolean {
     if (!this._bbox || !this._root.getScene().activeCamera) return false;
-    // If we have a model mesh, check it directly; otherwise check the bounding box
+    
+    // TODO: Implement proper frustum culling like Three.js
+    // For now, return true to test if this is the issue
+    // If we have a model mesh, check it directly
     if (this._model) {
-      return this._root.getScene().activeCamera!.isInFrustum(this._model);
+      const result = this._root.getScene().activeCamera!.isInFrustum(this._model);
+      if (this.z === 0) {
+        console.log(`[Tile inFrustum] Mesh frustum check for tile 0/0/0: ${result}`);
+      }
+      return result;
     }
-    return this._bbox ? this._root.getScene().activeCamera!.isInFrustum(this._bbox) : false;
+    
+    // For tiles without model (loading), assume they are in frustum
+    if (this.z === 0) {
+      console.log(`[Tile inFrustum] No model for tile 0/0/0, returning true`);
+    }
+    return true;
   }
 
   /** Implementation of ICullable.isInFrustum for Babylon.js */
@@ -161,6 +175,9 @@ export class Tile extends TransformNode {
   public update(params: TileUpdateParams) {
     // Don't update if no parent or currently loading
     if (!this.parent || this._isLoading) {
+      if (this.z === 0 && this._isLoading) {
+        console.log(`[Tile] Skipping update for tile 0/0/0 - isLoading=true`);
+      }
       return;
     }
 
@@ -180,6 +197,7 @@ export class Tile extends TransformNode {
     if (this.z >= minLevel && loader.downloadingThreads < MAXTHREADS) {
       // Download tile
       if (!this.model) {
+        console.log(`[Tile] Starting load for tile ${this.z}/${this.x}/${this.y}`);
         this._startLoad(loader);
         return;
       }
@@ -192,6 +210,11 @@ export class Tile extends TransformNode {
           return;
         }
       }
+    }
+
+    // Log when reaching LOD for root tile
+    if (this.z === 0) {
+      console.log(`[Tile] Reached LOD check for tile 0/0/0, hasModel=${!!this.model}`);
     }
 
     // LOD
@@ -207,13 +230,25 @@ export class Tile extends TransformNode {
   protected LOD(params: TileUpdateParams) {
     const { loader, minLevel, maxLevel, LODThreshold } = params;
     
+    // Get values before logging
+    const currentDistRatio = this.distRatio;
+    const currentInFrustum = this.inFrustum;
+    const shouldCreate = this.z < maxLevel && currentDistRatio < LODThreshold && currentInFrustum;
+    
+    // Debug LOD conditions for root tile - log every time
+    if (this.z === 0) {
+      console.log(`[Tile LOD] z=${this.z}, distRatio=${currentDistRatio.toFixed(2)}, LODThreshold=${LODThreshold}, inFrustum=${currentInFrustum}, maxLevel=${maxLevel}, hasModel=${!!this.model}, hasSubTiles=${!!this.subTiles}`);
+      console.log(`[Tile LOD] Should create children: ${shouldCreate}`);
+    }
+    
     // Simplified LOD evaluation
-    if (this.z < maxLevel && this.distRatio < LODThreshold && this.inFrustum) {
+    if (shouldCreate) {
       // Create children
       if (!this.subTiles) {
+        console.log(`[Tile LOD] Creating children for tile ${this.z}/${this.x}/${this.y}`);
         this._subTiles = this.createChildren(loader);
       }
-    } else if (this.z > minLevel && this.distRatio > LODThreshold * 2) {
+    } else if (this.z > minLevel && currentDistRatio > LODThreshold * 2) {
       // Remove children
       if (this.subTiles) {
         this.subTiles.forEach((child) => child.unLoad(loader, true));
@@ -270,7 +305,9 @@ export class Tile extends TransformNode {
    */
   private async _startLoad(loader: ITileLoader) {
     this._isLoading = true;
+    console.log(`[Tile] Calling loader.load for tile ${this.z}/${this.x}/${this.y}`);
     this._model = await loader.load(this);
+    console.log(`[Tile] Loaded model for tile ${this.z}/${this.x}/${this.y}`, this._model);
     this._model.parent = this;
     this.isLeaf && this._checkVisible();
     this._isLoading = false;

@@ -172,6 +172,8 @@ export class TileMap extends TransformNode {
       scene,
     } = params;
 
+    console.log("[TileMap] Constructor called", { minLevel, maxLevel, lon0, debug });
+
     this.scene = scene;
     this._minLevel = minLevel;
     this._maxLevel = maxLevel;
@@ -184,10 +186,12 @@ export class TileMap extends TransformNode {
     this.debug = this.loader.debug = debug;
     this.lon0 = lon0;
 
+    console.log("[TileMap] Setting imgSource", imgSource);
     this.imgSource = Array.isArray(imgSource) ? imgSource : [imgSource];
     this.demSource = demSource;
 
     this._resize();
+    console.log("[TileMap] Constructor completed. RootTile:", this.rootTile);
   }
 
   private _resize() {
@@ -201,6 +205,19 @@ export class TileMap extends TransformNode {
    */
   public update(camera: Camera) {
     if (this.autoUpdate) {
+      // Add first-time log
+      if (!this._updateCalled) {
+        console.log("[TileMap] First update call", {
+          camera,
+          minLevel: this.minLevel,
+          maxLevel: this.maxLevel,
+          LODThreshold: this.LODThreshold,
+          rootTile: this.rootTile,
+          loader: this.loader
+        });
+        this._updateCalled = true;
+      }
+      
       this.rootTile.update({
         camera,
         loader: this.loader,
@@ -210,6 +227,8 @@ export class TileMap extends TransformNode {
       });
     }
   }
+  
+  private _updateCalled = false;
 
   /**
    * Reload map data

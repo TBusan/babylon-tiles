@@ -31,24 +31,27 @@ export class TileImageLoader extends TileLoader implements ITileMaterialLoader<S
     
     // Get tile URL
     const url = source.getUrl(x, y, z);
+    console.log(`[TileImageLoader] Generated URL for tile ${z}/${x}/${y}: ${url}`);
     if (!url) {
       throw new Error(`Failed to get URL for tile ${z}/${x}/${y}`);
     }
 
     // Create material
     const material = new StandardMaterial(`tile-material-${z}-${x}-${y}`, this.scene);
+    console.log(`[TileImageLoader] Created material for tile ${z}/${x}/${y}`);
     
     // Load texture
     const texture = new Texture(url, this.scene, undefined, undefined, undefined, () => {
-      // Texture loaded successfully
+      console.log(`[TileImageLoader] Texture loaded successfully for tile ${z}/${x}/${y}`);
     }, (message) => {
-      console.error(`Failed to load texture: ${message}`);
+      console.error(`[TileImageLoader] Failed to load texture for tile ${z}/${x}/${y}: ${message}`);
     });
 
     material.diffuseTexture = texture;
     material.specularColor.set(0, 0, 0);
     material.alpha = source.opacity;
 
+    console.log(`[TileImageLoader] Returning material for tile ${z}/${x}/${y}`);
     return material;
   }
 
