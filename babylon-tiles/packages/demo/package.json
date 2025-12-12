@@ -4,7 +4,7 @@
   "description": "Babylon.js tile map demo",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 3003",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
