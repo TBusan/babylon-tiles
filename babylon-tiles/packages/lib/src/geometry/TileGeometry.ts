@@ -16,8 +16,9 @@ export class TileGeometry {
   public vertexData: VertexData;
 
   public constructor() {
-    // Create default plane geometry
-    const data = new Float32Array([0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0]);
+    // Create default plane geometry (2x2 grid with all heights = 0)
+    // For a 2x2 grid, we need 4 height values: [0, 0, 0, 0]
+    const data = new Float32Array([0, 0, 0, 0]);
     this.vertexData = this.createVertexData(data);
   }
 

@@ -11,7 +11,7 @@ import { TileSource } from "babylon-tile";
  */
 export const arcGisImgSource = new TileSource({
   dataType: "image",
-  url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  url: "https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   attribution: "© Esri",
   minLevel: 0,
   maxLevel: 18,

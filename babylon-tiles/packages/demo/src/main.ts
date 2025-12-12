@@ -40,7 +40,6 @@ function registerLoaders(viewer: Plugin.BabylonViewer) {
 function createMap(viewer: Plugin.BabylonViewer) {
   // Image data source
   const imgSource = Plugin.arcGisImgSource;
-  debugger
   // DEM data source (optional, comment out for flat map)
   // const demSource = Plugin.arcGisDemSource;
 
@@ -63,9 +62,9 @@ function createMap(viewer: Plugin.BabylonViewer) {
     debug: 0,
   });
 
-  // 🔧 FIX: Increase LOD threshold to match the distance ratio
-  // distRatio is around 430, so we need a much larger threshold
-  map.LODThreshold = 500;
+  // Set LOD threshold (default is 1, but we need a reasonable value for world map)
+  // This value determines when to subdivide tiles based on camera distance
+  map.LODThreshold = 1;
 
   // Rotate map to horizontal plane
   map.rotation.x = -Math.PI / 2;
@@ -87,11 +86,11 @@ function initViewer() {
   const viewer = new Plugin.BabylonViewer("renderCanvas");
 
   // Set initial camera position
-  // 🔧 FIX: Reduce camera distance to get better LOD behavior
+  // Camera should be far enough to see the entire world map
   viewer.setCameraPosition(
     -Math.PI / 2,  // alpha (longitude)
     Math.PI / 4,   // beta (latitude)
-    1000,       // radius (distance) - reduced from 5000000
+    1000000,       // radius (distance) - appropriate for world map viewing
     Vector3.Zero() // target
   );
 
@@ -144,7 +143,6 @@ function main() {
     document.querySelector("#loading")?.classList.add("hidden");
   }, 1000);
 
-  debugger
   // Create viewer
   const viewer = initViewer();
 
@@ -153,6 +151,13 @@ function main() {
 
   // Create map
   const map = createMap(viewer);
+
+  // Ensure map is added to scene root (TransformNode should auto-add, but explicit for safety)
+  // In Babylon.js, TransformNode with scene parameter is automatically added to scene.rootNodes
+  // But we can verify it's in the scene
+  if (!viewer.scene.rootNodes.includes(map)) {
+    console.warn("[main] Map not in scene rootNodes, this should not happen");
+  }
 
   // Update map in render loop
   viewer.scene.registerBeforeRender(() => {
