@@ -189,8 +189,8 @@ export class Tile extends TransformNode {
    */
   private computeTileSize(debug: number) {
     // Create local bounding box (matching three-tile: new Box3(new Vector3(-0.5, -0.5), new Vector3(0.5, 0.5)))
-    const localMin = new Vector3(-0.5, -0.5, -300);
-    const localMax = new Vector3(0.5, 0.5, 9000);
+    const localMin = new Vector3(-0.5, -0.5, 0);
+    const localMax = new Vector3(0.5, 0.5, 0);
     
     // Transform to world coordinates (matching three-tile: .applyMatrix4(this.matrixWorld))
     const worldMatrix = this.getWorldMatrix();
@@ -199,6 +199,16 @@ export class Tile extends TransformNode {
     
     // Create world bounding box
     this._bbox = new BoundingBox(worldMin, worldMax);
+    
+    // Increase bounding box height in world coordinates (matching three-tile: this._bbox.min.setY(-300); this._bbox.max.setY(9000))
+    // In three-tile, Y is vertical (up) in world coordinates
+    // In Babylon.js, after rotation.x = -PI/2, the map is in XZ plane, so height is in world Y
+    // We expand the bounding box in world Y direction to cover height range
+    const expandedMin = this._bbox.minimum.clone();
+    const expandedMax = this._bbox.maximum.clone();
+    expandedMin.y = Math.min(expandedMin.y, -300);
+    expandedMax.y = Math.max(expandedMax.y, 9000);
+    this._bbox = new BoundingBox(expandedMin, expandedMax);
 
     // Distance check point - tile center world coordinate (matching three-tile)
     // Note: _checkPoint.y will be updated in _startLoad to the geometry's max height
@@ -213,8 +223,9 @@ export class Tile extends TransformNode {
     }
 
     // Tile size - diagonal length in world coordinates (matching three-tile: this._bbox.getSize(tempVec3).length())
-    const worldSize = worldMax.subtract(worldMin);
-    this._sizeInWorld = worldSize.length();
+    // Use expanded bounding box for size calculation
+    const expandedSize = expandedMax.subtract(expandedMin);
+    this._sizeInWorld = expandedSize.length();
     
     // Assert that size is reasonable (matching three-tile: console.assert(this._sizeInWorld > 10))
     if (this._sizeInWorld <= 10) {
@@ -225,9 +236,9 @@ export class Tile extends TransformNode {
     if (this.z === 0) {
       console.log(`[Tile computeTileSize] Root tile ${this.z}/${this.x}/${this.y}:`, {
         localSize: '1.0 (from -0.5 to 0.5)',
-        worldMin: worldMin.asArray(),
-        worldMax: worldMax.asArray(),
-        worldSize: worldSize.asArray(),
+        worldMin: expandedMin.asArray(),
+        worldMax: expandedMax.asArray(),
+        worldSize: expandedSize.asArray(),
         sizeInWorld: this._sizeInWorld,
         scaling: this.scaling.asArray(),
         worldMatrix: worldMatrix.m.slice(0, 4) // First row of matrix
@@ -274,11 +285,12 @@ export class Tile extends TransformNode {
       this.computeTileSize(loader.debug);
     }
 
-    // Download or update tile (only if in frustum or at min level)
-    // Matching three-tile: if (this.z >= minLevel && loader.downloadingThreads < MAXTHREADS)
-    // Note: three-tile doesn't check inFrustum in shouldLoad condition, only checks downloadingThreads
-    // The frustum check is done in LOD logic, not in loading logic
-    const shouldLoad = this.z >= minLevel && loader.downloadingThreads < MAXTHREADS;
+    // Download or update tile
+    // Three-tile does not check frustum here, but to avoid loading massive off-screen tiles
+    // we also require the tile to be in frustum, except the root/min-level tiles.
+    const shouldLoad = this.z >= minLevel &&
+                      loader.downloadingThreads < MAXTHREADS &&
+                      (this.inFrustum || this.z <= minLevel);
     
     // Debug for child tiles to understand why they're not loading
     if (this.z > 0 && !this.model && this.parent instanceof Tile) {
@@ -322,8 +334,10 @@ export class Tile extends TransformNode {
     // LOD
     this.LOD(params);
 
-    // Recursively update sub tiles
-    this.subTiles?.forEach((child) => child.update(params));
+    // Recursively update sub tiles; skip updating far outside frustum to reduce work
+    if (this.inFrustum || this.z <= minLevel) {
+      this.subTiles?.forEach((child) => child.update(params));
+    }
   }
 
   /**
@@ -511,6 +525,10 @@ export class Tile extends TransformNode {
     this._model.position.set(0, 0, 0);
     this._model.scaling.set(1, 1, 1);
     this._model.rotation.set(0, 0, 0);
+    // Avoid backface-culling hiding the plane when camera is above/below
+    if ((this._model.material as any)?.backFaceCulling !== undefined) {
+      (this._model.material as any).backFaceCulling = false;
+    }
     
     // Set parent - in Babylon.js, setting parent automatically handles scene hierarchy
     // The mesh will be removed from scene rootNodes and added as child of this Tile

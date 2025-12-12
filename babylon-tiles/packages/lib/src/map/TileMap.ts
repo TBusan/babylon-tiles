@@ -89,6 +89,18 @@ export class TileMap extends TransformNode {
     this._maxLevel = value;
   }
 
+  private _LODThreshold = 1;
+  /**
+   * LOD threshold.
+   * Larger values create more detail but increase resource usage. Recommended 1-2. Default 1.
+   */
+  public get LODThreshold() {
+    return this._LODThreshold;
+  }
+  public set LODThreshold(value: number) {
+    this._LODThreshold = value;
+  }
+
   /** Get central meridian longitude */
   public get lon0() {
     return this.projection.lon0;
@@ -141,16 +153,6 @@ export class TileMap extends TransformNode {
   public set demSource(value: ISource | undefined) {
     this.loader.demSource = value;
     this.updateSource(false, true);
-  }
-
-  private _LODThreshold = 1;
-  /** Get LOD threshold */
-  public get LODThreshold() {
-    return this._LODThreshold;
-  }
-  /** Set LOD threshold */
-  public set LODThreshold(value) {
-    this._LODThreshold = value;
   }
 
   /** Get map lat/lon bounds */
