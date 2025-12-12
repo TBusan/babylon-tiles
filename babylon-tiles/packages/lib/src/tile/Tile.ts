@@ -4,11 +4,17 @@
  * @date: 2025-10-21
  */
 
-import { Mesh, TransformNode, Scene, Camera, Vector3, BoundingBox, Matrix } from "@babylonjs/core";
+import { Mesh, TransformNode, Scene, Camera, Vector3, BoundingBox, Matrix, Plane, BoundingInfo } from "@babylonjs/core";
 import { ITileLoader } from "../loader/ITileLoaders";
 
 /** Maximum download threads */
 const MAXTHREADS = 10;
+
+/** Camera world position (shared across all tiles) */
+const cameraWorldPosition = new Vector3();
+
+/** Camera reference (updated once per frame at root tile) */
+let currentCamera: Camera | null = null;
 
 /** Tile update parameters type */
 export type TileUpdateParams = {
@@ -81,24 +87,20 @@ export class Tile extends TransformNode {
 
   /** Is tile in frustum */
   public get inFrustum(): boolean {
-    if (!this._bbox || !this._root.getScene().activeCamera) return false;
-    
-    // TODO: Implement proper frustum culling like Three.js
-    // For now, return true to test if this is the issue
-    // If we have a model mesh, check it directly
-    if (this._model) {
-      const result = this._root.getScene().activeCamera!.isInFrustum(this._model);
-      if (this.z === 0) {
-        console.log(`[Tile inFrustum] Mesh frustum check for tile 0/0/0: ${result}`);
-      }
-      return result;
+    // If no bounding box, cannot determine (should not happen after computeTileSize)
+    if (!this._bbox) {
+      return false;
     }
     
-    // For tiles without model (loading), assume they are in frustum
-    if (this.z === 0) {
-      console.log(`[Tile inFrustum] No model for tile 0/0/0, returning true`);
+    // If camera not set yet, assume in frustum (for initial load)
+    if (!currentCamera) {
+      return true;
     }
-    return true;
+    
+    // In Babylon.js, use camera.isInFrustum() with BoundingInfo
+    // Create a BoundingInfo from the bounding box
+    const boundingInfo = new BoundingInfo(this._bbox.minimum, this._bbox.maximum);
+    return currentCamera.isInFrustum(boundingInfo);
   }
 
   /** Implementation of ICullable.isInFrustum for Babylon.js */
@@ -232,13 +234,23 @@ export class Tile extends TransformNode {
 
     const { loader, minLevel, camera } = params;
 
+    // If root tile, store camera reference and position once per frame
+    // Matching three-tile: if (this.z === 0) { camera.getWorldPosition(cameraWorldPosition); frustum.setFromProjectionMatrix(...); }
+    // In Babylon.js, we use camera.position directly and store camera reference for frustum checks
+    if (this.z === 0) {
+      cameraWorldPosition.copyFrom(camera.position);
+      currentCamera = camera;
+    }
+
     // Compute tile size, bounding box
     if (this._sizeInWorld < 0) {
       this.computeTileSize(loader.debug);
     }
 
-    // Download or update tile
-    if (this.z >= minLevel && loader.downloadingThreads < MAXTHREADS) {
+    // Download or update tile (only if in frustum or at min level)
+    // Matching three-tile: only load tiles that are in frustum or at min level
+    const shouldLoad = this.z >= minLevel && loader.downloadingThreads < MAXTHREADS && (this.inFrustum || this.z <= minLevel);
+    if (shouldLoad) {
       // Download tile
       if (!this.model) {
         console.log(`[Tile] Starting load for tile ${this.z}/${this.x}/${this.y}`);
@@ -469,6 +481,16 @@ export class Tile extends TransformNode {
       // This shouldn't be necessary, but just in case
       scene.addMesh(this._model, false);
     }
+    
+    // Explicitly add mesh to this tile's children (matching three-tile: this.add(this._model))
+    // In Babylon.js, setting parent should handle this, but we ensure it's added
+    if (this._model.parent !== this) {
+      this._model.parent = this;
+    }
+    
+    // Ensure mesh is visible and enabled by default
+    this._model.isVisible = true;
+    this._model.setEnabled(true);
     
     // Check visibility and set showing
     if (this.isLeaf) {

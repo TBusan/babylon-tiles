@@ -86,11 +86,11 @@ function initViewer() {
   const viewer = new Plugin.BabylonViewer("renderCanvas");
 
   // Set initial camera position
-  // Camera should be far enough to see the entire world map
+  // Camera distance set to 5000 meters for closer initial view
   viewer.setCameraPosition(
     -Math.PI / 2,  // alpha (longitude)
     Math.PI / 4,   // beta (latitude)
-    1000000,       // radius (distance) - appropriate for world map viewing
+    5000,          // radius (distance) - 5000 meters from map
     Vector3.Zero() // target
   );
 
