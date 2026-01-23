@@ -36,8 +36,12 @@ export class TileImageLoader extends TileLoader implements ITileMaterialLoader<S
       throw new Error(`Failed to get URL for tile ${z}/${x}/${y}`);
     }
 
-    // Create material
+    // Create unlit material (three-tile uses MeshBasicMaterial)
     const material = new StandardMaterial(`tile-material-${z}-${x}-${y}`, this.scene);
+    material.disableLighting = true;           // show texture without lights
+    material.backFaceCulling = false;          // ensure visible from both sides
+    material.specularColor.set(0, 0, 0);       // remove specular highlight
+    material.alpha = source.opacity;
     console.log(`[TileImageLoader] Created material for tile ${z}/${x}/${y}`);
     
     // Load texture
@@ -48,8 +52,9 @@ export class TileImageLoader extends TileLoader implements ITileMaterialLoader<S
     });
 
     material.diffuseTexture = texture;
-    material.specularColor.set(0, 0, 0);
-    material.alpha = source.opacity;
+    // Also drive emissive so it stays bright without lights
+    material.emissiveTexture = texture;
+    material.emissiveColor.set(1, 1, 1);
 
     console.log(`[TileImageLoader] Returning material for tile ${z}/${x}/${y}`);
     return material;
