@@ -1,0 +1,21 @@
+{
+	"name": "@babylon-tile/demo",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc && vite build",
+		"preview": "vite preview"
+	},
+	"dependencies": {
+		"@babylon-tile/lib": "workspace:*",
+		"@babylonjs/core": "^7.8.1",
+		"@babylonjs/loaders": "^7.8.1",
+		"@babylonjs/gui": "^7.8.1"
+	},
+	"devDependencies": {
+		"typescript": "^5.3.3",
+		"vite": "^5.0.12"
+	}
+}

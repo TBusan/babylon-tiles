@@ -1,0 +1,22 @@
+{
+	"name": "babylon-tile",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Babylon.js 瓦片地图库",
+	"scripts": {
+		"build": "pnpm -r --filter './packages/**' build",
+		"dev": "pnpm --filter './packages/demo' dev"
+	},
+	"keywords": [
+		"babylonjs",
+		"gis",
+		"tile",
+		"map",
+		"3d"
+	],
+	"author": "Babylon-Tile Team",
+	"license": "MIT",
+	"devDependencies": {
+		"typescript": "^5.3.3"
+	}
+}
