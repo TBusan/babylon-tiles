@@ -361,35 +361,17 @@ export class TileLoader implements ITileLoader {
 		// 加载每个数据源的材质
 		for (const source of sources) {
 			try {
-				TileLoader._downloadingThreads++;
-
 				// 获取瓦片 URL（使用变换后的坐标）
 				const url = source.getUrl(coords.x, coords.y, coords.z);
 
 				if (!url) {
-					TileLoader._downloadingThreads--;
 					continue;
 				}
 
-				// 创建纹理（带错误处理）
-				const texture = new Texture(
-					url,
-					this._scene,
-					undefined,  // noMipmap
-					undefined,  // invertY
-					undefined,  // samplingMode
-					() => {
-						// onLoad 回调
-						TileLoader._downloadingThreads--;
-					},
-					(_message?: string, _exception?: any) => {
-						// onError 回调
-						TileLoader._downloadingThreads--;
-						if (this.debug > 0) {
-							console.error(`Texture load error for tile ${coords.z}-${coords.x}-${coords.y}:`, _message);
-						}
-					}
-				);
+				TileLoader._downloadingThreads++;
+
+				// 等待纹理加载完成（与 three-tile 行为一致）
+				const texture = await this._loadTexture(url, coords);
 
 				// 创建材质
 				const material = TileMaterial.createTileMaterial({
@@ -402,7 +384,6 @@ export class TileLoader implements ITileLoader {
 
 				materials.push(material);
 			} catch (error) {
-				TileLoader._downloadingThreads--;
 				if (this.debug > 0) {
 					console.error('Load Material Error:', error);
 				}
@@ -410,6 +391,59 @@ export class TileLoader implements ITileLoader {
 		}
 
 		return materials;
+	}
+
+	/**
+	 * 加载纹理（Promise 包装，确保等待加载完成）
+	 * @param url - 纹理 URL
+	 * @param coords - 瓦片坐标（用于调试）
+	 * @returns Promise<Texture>
+	 */
+	private _loadTexture(
+		url: string,
+		coords: { x: number; y: number; z: number }
+	): Promise<Texture> {
+		return new Promise<Texture>((resolve) => {
+			let settled = false;
+
+			const settle = (tex: Texture) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timeout);
+					TileLoader._downloadingThreads--;
+					resolve(tex);
+				}
+			};
+
+			// 安全超时：防止纹理加载永不完成导致 _isLoading 卡死
+			const timeout = setTimeout(() => {
+				if (this.debug > 0) {
+					console.warn(`Texture load timeout for tile ${coords.z}-${coords.x}-${coords.y}`);
+				}
+				settle(texture);
+			}, 30000);
+
+			let texture: Texture;
+			try {
+				texture = new Texture(
+					url,
+					this._scene,
+					undefined,  // noMipmap
+					undefined,  // invertY
+					undefined,  // samplingMode
+					() => settle(texture),
+					(_message?: string, _exception?: any) => {
+						if (this.debug > 0) {
+							console.error(`Texture load error for tile ${coords.z}-${coords.x}-${coords.y}:`, _message);
+						}
+						settle(texture);
+					}
+				);
+			} catch (e) {
+				// Texture 构造函数抛出异常时仍然需要结算计数器
+				settle(texture!);
+			}
+		});
 	}
 
 	/**

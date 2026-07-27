@@ -249,23 +249,33 @@ export class Tile extends BabylonTransformNode {
 	 */
 	public getTileSize(): number {
 		if (this._sizeInWorld < 0) {
-			const s = this.scaling;
-			const wm = this.getWorldMatrix();
-			const p1 = BabylonVector3.TransformCoordinates(
-				new BabylonVector3(-s.x, 0, -s.z),
-				wm
-			);
-			const p2 = BabylonVector3.TransformCoordinates(
-				new BabylonVector3(s.x, 0, s.z),
-				wm
-			);
-			this._sizeInWorld = BabylonVector3.Distance(p1, p2);
+			this._computeSizeInWorld();
 		}
 		return this._sizeInWorld;
 	}
 
 	/**
+	 * 计算并缓存瓦片世界大小
+	 */
+	private _computeSizeInWorld(): void {
+		const s = this.scaling;
+		const wm = this.getWorldMatrix();
+		const p1 = BabylonVector3.TransformCoordinates(
+			new BabylonVector3(-s.x, 0, -s.z),
+			wm
+		);
+		const p2 = BabylonVector3.TransformCoordinates(
+			new BabylonVector3(s.x, 0, s.z),
+			wm
+		);
+		this._sizeInWorld = BabylonVector3.Distance(p1, p2);
+	}
+
+	/**
 	 * 判断是否需要加载瓦片数据
+	 * 与 three-tile 行为对齐：
+	 * - 没有模型的瓦片始终加载（不要求视锥体内）
+	 * - 脏瓦片更新要求在视锥体内
 	 */
 	private _needsLoad(loader: ITileLoader): boolean {
 		// 下载线程数 >= 最大下载线程数，不下载
@@ -273,18 +283,18 @@ export class Tile extends BabylonTransformNode {
 			return false;
 		}
 
-		// 没有模型则下载
+		// 没有模型则下载（与 three-tile 一致：不要求 inFrustum）
 		if (!this._model) {
 			return true;
 		}
 
-		// 不是脏瓦片或不在视野范围内，不下载
+		// 不是脏瓦片或不在视野范围内，不更新
 		if (!this._tileIsDirty || !this._inFrustum) {
 			return false;
 		}
 
-		// 父瓦片等子瓦片已加载完成后再加载
-		return !this._subTiles?.some(tile => !tile._tileIsDirty);
+		// 先更新子瓦片再更新父瓦片（与 three-tile 一致）
+		return !this._subTiles?.some(tile => tile._tileIsDirty);
 	}
 
 	/**
@@ -407,6 +417,16 @@ export class Tile extends BabylonTransformNode {
 
 		try {
 			const model = await loader.load(this);
+
+			// 检查加载完成后瓦片是否仍在树中（可能在加载期间被 LOD REMOVE 卸载）
+			if (!this.parent) {
+				model.geometry?.dispose();
+				if (model.material) {
+					(model.material as any).dispose?.();
+				}
+				return;
+			}
+
 			this._model = model;
 
 			// Babylon.js setParent 默认保持世界空间不变，会破坏模型的局部变换
@@ -470,7 +490,7 @@ export class Tile extends BabylonTransformNode {
 		} else {
 			this.getChildTransformNodes().forEach(child => {
 				if (child instanceof Tile && (child._model || child._isLoading)) {
-					child._isDirty = true;
+					child._tileIsDirty = true;
 				}
 			});
 		}

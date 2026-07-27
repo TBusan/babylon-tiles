@@ -34,6 +34,11 @@ const createScene = async (): Promise<Scene> => {
 	// 地图平铺在 X-Z 平面（Y 为海拔高度）。右键平移只应在水平面内移动相机目标，
 	// 不能沿 Y 抬升/压低目标，否则地图会“飘”离地面。
 	camera.panningAxis = new Vector3(1, 0, 1);
+	// 平移灵敏度：Babylon.js 7.x 的平移公式为 panDelta = pixelDelta / panningSensibility（不乘 radius），
+	// 因此需要动态设置：panningSensibility = K / radius，
+	// 使得拖拽相同像素在各缩放级别下覆盖相同比例的可见区域（类似 Mapbox 的行为）。
+	// K=2500 时，200px 拖拽 ≈ 移动可见区域的 5~10%。
+	camera.panningSensibility = 2500 / camera.radius;
 
 	const light = new HemisphericLight('light', new Vector3(0, 1, 0), scene);
 	light.intensity = 1;
@@ -68,10 +73,8 @@ const createScene = async (): Promise<Scene> => {
 	// 在渲染循环中更新地图
 	scene.registerBeforeRender(() => {
 		map.update(camera);
-		// ArcRotateCamera 的平移量 = 像素位移 / panningSensibility（世界单位，与相机半径无关）。
-		// 在 4e7 量级的地图上，默认值（50）一次拖拽只移动几个单位，肉眼几乎看不出，
-		// 表现为“右键拖不动地图”。让灵敏度随半径变化，使拖拽手感在各缩放级别下都近似 1:1。
-		camera.panningSensibility = 1000 / camera.radius;
+		// 动态调整平移灵敏度：缩放越远（radius 越大）平移越快，缩放越近平移越慢
+		camera.panningSensibility = 2500 / camera.radius;
 	});
 
 	window.addEventListener('resize', () => {

@@ -404,7 +404,7 @@ export class TileMap extends BabylonTransformNode {
 		const currentTime = Date.now();
 		const elapsed = currentTime - this._lastUpdateTime;
 
-		// 控制瓦片树更新速率
+		// 控制瓦片树更新速率（与 three-tile 一致：100ms 间隔）
 		if (elapsed > this.updateInterval) {
 			this.rootTile.update({
 				camera,
