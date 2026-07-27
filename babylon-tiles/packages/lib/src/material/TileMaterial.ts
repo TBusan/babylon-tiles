@@ -64,7 +64,12 @@ export class TileMaterial {
 			emissiveColor,
 			opacity = 1,
 			transparent = false,
-			backFaceCulling = true,
+			// 默认关闭背面剔除。瓦片几何体的顶点绕序是从 three.js（右手系）移植过来的，
+			// 在 three.js 的右手裁剪空间里它是正面（FrontSide 可见）；但 Babylon.js 默认左手系，
+			// 同一绕序在屏幕空间里变成了背面，若开启 backFaceCulling 会把每一块瓦片四边形都剔除，
+			// 表现为整屏空白/黑屏。相机被 upperBetaLimit 限制在地平线以上，永远看不到四边形底面，
+			// 因此关闭剔除在视觉上与 three.js 的 FrontSide 等价，且不影响光照（法线属性仍朝上）。
+			backFaceCulling = false,
 			specularColor,
 			wireframe = false,
 		} = options;
@@ -133,7 +138,9 @@ export class TileMaterial {
 			emissiveColor,
 			opacity = 1,
 			transparent = false,
-			backFaceCulling = true,
+			// 见 createTileMaterial 中关于绕序/手性系的说明：移植自 three.js 右手系的绕序在
+			// Babylon 左手系下是背面，开启剔除会导致整屏空白，故默认关闭。
+			backFaceCulling = false,
 			roughness = 0.8,
 			metallic = 0,
 		} = options;

@@ -10,7 +10,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
 import '@babylonjs/loaders/glTF';
 
-import { TileMap, ArcGisSource, Tile } from '@babylon-tile/lib';
+import { TileMap, ArcGisSource } from '@babylon-tile/lib';
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
@@ -19,14 +19,21 @@ const createScene = async (): Promise<Scene> => {
 	const scene = new Scene(engine);
 	scene.clearColor = new Color4(0.1, 0.1, 0.15, 1.0);
 
-	const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 1000, Vector3.Zero(), scene);
+	// 地图采用 Web Mercator 投影，整体尺寸约 4e7 单位（地球周长量级）。
+	// 相机半径必须与之匹配：three-tile 默认从 ~2.8e7 高度俯视整张地图。
+	// radius 过小（如 1000）相当于在 4e7 单位的地图上放大到单个纹素，
+	// 而 (lon0=0, lat0=0) 落在海面，纹素近乎纯黑，看起来一片空白。
+	const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 2.8e7, Vector3.Zero(), scene);
 	camera.attachControl(canvas, true);
-	camera.wheelPrecision = 50;
+	camera.wheelDeltaPercentage = 0.05; // 按比例缩放，适配大尺度地图（绝对 wheelPrecision 在千万级半径下无效）
 	camera.lowerRadiusLimit = 10;
-	camera.upperRadiusLimit = 10000000;
+	camera.upperRadiusLimit = 1e8; // 允许缩放到可见整张地图
 	camera.upperBetaLimit = Math.PI / 2;
 	camera.minZ = 1;
 	camera.maxZ = 100000000;
+	// 地图平铺在 X-Z 平面（Y 为海拔高度）。右键平移只应在水平面内移动相机目标，
+	// 不能沿 Y 抬升/压低目标，否则地图会“飘”离地面。
+	camera.panningAxis = new Vector3(1, 0, 1);
 
 	const light = new HemisphericLight('light', new Vector3(0, 1, 0), scene);
 	light.intensity = 1;
@@ -61,65 +68,15 @@ const createScene = async (): Promise<Scene> => {
 	// 在渲染循环中更新地图
 	scene.registerBeforeRender(() => {
 		map.update(camera);
+		// ArcRotateCamera 的平移量 = 像素位移 / panningSensibility（世界单位，与相机半径无关）。
+		// 在 4e7 量级的地图上，默认值（50）一次拖拽只移动几个单位，肉眼几乎看不出，
+		// 表现为“右键拖不动地图”。让灵敏度随半径变化，使拖拽手感在各缩放级别下都近似 1:1。
+		camera.panningSensibility = 1000 / camera.radius;
 	});
 
 	window.addEventListener('resize', () => {
 		engine.resize();
 	});
-
-	// ---- 增强诊断日志：每3秒输出 ----
-	let lastLogTime1 = 0;
-	scene.registerBeforeRender(() => {
-		const now = performance.now();
-		if (now - lastLogTime1 >= 3000) {
-			const stats = map.getTileCount();
-			const meshes = scene.meshes.filter(m => m.material);
-			const textured = meshes.filter(m => {
-				const mat = m.material as any;
-				return mat && (mat.diffuseTexture || mat.albedoTexture);
-			});
-			// 统计所有 showing 的瓦片（含非叶子）
-			let allVisible = 0;
-			const visitTile = (t: any) => {
-				if (t.showing) allVisible++;
-				if (t.subTiles) t.subTiles.forEach((c: any) => visitTile(c));
-			};
-			visitTile(map.rootTile);
-			// 找第一个 showing 且有 model 的瓦片
-			let firstShowing: any = null;
-			const findFirst = (t: any) => {
-				if (firstShowing) return;
-				if (t.showing && t._model) {
-					firstShowing = t;
-					return;
-				}
-				if (t.subTiles) t.subTiles.forEach((c: any) => findFirst(c));
-			};
-			findFirst(map.rootTile);
-			const tileInfo = firstShowing
-				? `firstShow: z${firstShowing.z}(${firstShowing.x},${firstShowing.y}) ` +
-				  `pos=(${firstShowing.position.x.toFixed(1)},${firstShowing.position.y.toFixed(1)},${firstShowing.position.z.toFixed(1)}) ` +
-				  `scl=(${firstShowing.scaling.x.toFixed(2)},${firstShowing.scaling.y.toFixed(2)},${firstShowing.scaling.z.toFixed(2)}) ` +
-				  `mesh.enabled=${firstShowing._model?.isEnabled()} ` +
-				  `mesh.pos=(${firstShowing._model?.position.x.toFixed(3)},${firstShowing._model?.position.y.toFixed(3)},${firstShowing._model?.position.z.toFixed(3)}) ` +
-				  `mat=${firstShowing._model?.material?.name || 'none'}`
-				: 'firstShow: NONE';
-			console.log(
-				`[TileMap] total=${stats.total} leaf=${stats.leaf} ` +
-				`visible(leaf)=${stats.visible} visible(all)=${allVisible} ` +
-				`inFrust=${stats.inFrustum} maxLv=${stats.maxLevel} dl=${stats.downloading} | ` +
-				`meshes=${meshes.length} tex=${textured.length} FPS=${engine.getFps().toFixed()}`
-			);
-			console.log(`  ${tileInfo}`);
-			lastLogTime1 = now;
-		}
-	});
-
-	// ---- 3秒后强制所有瓦片可见（调试用） ----
-	setTimeout(() => {
-		console.log('>>> Enabling Tile.forceVisible = true');
-		Tile.forceVisible = true;
-	}, 3000);
 
 	return scene;
 };

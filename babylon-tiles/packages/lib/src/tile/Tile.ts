@@ -147,10 +147,11 @@ export class Tile extends BabylonTransformNode {
 			this.position
 		);
 
-		// 使用 Three.js 约定: world = parentWorld * localMatrix
-		// （子瓦片的平移需要乘以父瓦片的缩放，以匹配 three-tile 的
-		//   matrixAutoUpdate=false + updateMatrixWorld() 行为）
-		parentWorld.multiplyToRef(localMatrix, this._worldMatrix);
+		// Babylon.js 采用行主序 / 行向量约定，层级合成必须是 local * parent，
+		// 这与 three.js 列向量约定的 parent * local 正好相反。
+		// 若写成 parentWorld * localMatrix，子瓦片的平移不会被父瓦片的缩放放大，
+		// 所有瓦片会塌缩到原点附近并互相重叠（同时整屏过度绘制导致帧率崩到 1）。
+		localMatrix.multiplyToRef(parentWorld, this._worldMatrix);
 
 		// 递归使子节点失效
 		for (const child of this.getChildTransformNodes()) {
