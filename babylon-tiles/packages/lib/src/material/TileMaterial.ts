@@ -8,7 +8,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import type { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 
 /**
  * 瓦片材质选项
@@ -234,7 +234,6 @@ export class TileMaterial {
 		textureUrl: string,
 		options?: Partial<TileMaterialOptions>
 	): StandardMaterial {
-		const { Texture } = require('@babylonjs/core/Materials/Textures/texture');
 		const texture = new Texture(textureUrl, scene);
 		texture.hasAlpha = options?.transparent || false;
 

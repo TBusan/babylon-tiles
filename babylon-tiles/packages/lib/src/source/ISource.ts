@@ -29,6 +29,9 @@ export interface ISource {
 	/** 最大显示级别（大于此级别不加载数据） */
 	maxLevel: number;
 
+	/** 地理坐标边界 [minLon, minLat, maxLon, maxLat] */
+	bounds?: BoundsType;
+
 	/** 透明度（0-1） */
 	opacity?: number;
 

@@ -23,6 +23,7 @@ export * from './loader/index.js';
 
 // 导出瓦片相关
 export * from './tile/util.js';
+export * from './tile/FrustumEx.js';
 export * from './tile/Tile.js';
 export * from './tile/TileMap.js';
 

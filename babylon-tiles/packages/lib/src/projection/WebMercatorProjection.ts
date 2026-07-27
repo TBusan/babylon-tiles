@@ -12,7 +12,7 @@ import type { IProjection, ProjectedPoint, GeoPoint } from './IProjection.js';
  */
 export class WebMercatorProjection implements IProjection {
 	/** 投影类型标识 */
-	public readonly ID = 'EPSG:3857';
+	public readonly ID = '3857';
 
 	private _lon0: number;
 
@@ -63,7 +63,7 @@ export class WebMercatorProjection implements IProjection {
 	 * 地图深度（单位：米）
 	 */
 	public get mapDepth(): number {
-		return 9000;
+		return 1;
 	}
 
 	/**
@@ -109,8 +109,46 @@ export class WebMercatorProjection implements IProjection {
 	 */
 	public getProjBoundsFromLonLat(bounds: [number, number, number, number]): [number, number, number, number] {
 		const [minLon, minLat, maxLon, maxLat] = bounds;
-		const min = this.project(minLon, minLat);
-		const max = this.project(maxLon, maxLat);
-		return [min.x, min.y, max.x, max.y];
+		const withCenter = maxLon - minLon > 180;
+		const p1 = this.project(minLon + (withCenter ? this._lon0 : 0), minLat);
+		const p2 = this.project(maxLon + (withCenter ? this._lon0 : 0), maxLat);
+		return [Math.min(p1.x, p2.x), Math.min(p1.y, p2.y), Math.max(p1.x, p2.x), Math.max(p1.y, p2.y)];
+	}
+
+	/**
+	 * 根据中央经线取得变换后的瓦片X坐标
+	 */
+	public getTileXWithCenterLon(x: number, z: number): number {
+		const n = Math.pow(2, z);
+		let newx = x + Math.round((n / 360) * this._lon0);
+		if (newx >= n) {
+			newx -= n;
+		} else if (newx < 0) {
+			newx += n;
+		}
+		return newx;
+	}
+
+	/**
+	 * 取得瓦片边界投影坐标范围
+	 */
+	public getProjBoundsFromXYZ(x: number, y: number, z: number): [number, number, number, number] {
+		const worldSize = Math.PI * 6378137;
+		const tileSize = (2 * worldSize) / Math.pow(2, z);
+		const minX = -worldSize + x * tileSize;
+		const minY = worldSize - (y + 1) * tileSize;
+		const maxX = -worldSize + (x + 1) * tileSize;
+		const maxY = worldSize - y * tileSize;
+		return [minX, minY, maxX, maxY];
+	}
+
+	/**
+	 * 取得瓦片经纬度边界范围
+	 */
+	public getLonLatBoundsFromXYZ(x: number, y: number, z: number): [number, number, number, number] {
+		const projectBounds = this.getProjBoundsFromXYZ(x, y, z);
+		const p1 = this.unProject(projectBounds[0], projectBounds[1]);
+		const p2 = this.unProject(projectBounds[2], projectBounds[3]);
+		return [p1.lon, p1.lat, p2.lon, p2.lat];
 	}
 }

@@ -1,7 +1,8 @@
 /**
  * @description: 瓦片地图类
+ * Ported from three-tile's TileMap.ts for Babylon.js (Y-up coordinate system)
  * @author: Babylon-Tile Team
- * @date: 2025-01-23
+ * @date: 2025-07-25
  */
 
 import type { Camera } from '@babylonjs/core/Cameras/camera';
@@ -89,6 +90,7 @@ export interface MapParams {
 /**
  * 瓦片地图类
  * 管理整个瓦片地图系统，包括瓦片树、投影、数据源等
+ * 地图平铺在 X-Z 平面（Babylon Y-up），Y 轴为海拔高度
  */
 export class TileMap extends BabylonTransformNode {
 	/** 名称 */
@@ -121,6 +123,8 @@ export class TileMap extends BabylonTransformNode {
 	/** 事件 Observable 映射 */
 	private _observables: Map<keyof TileMapEventMap, Observable<any>> = new Map();
 
+	private _mask = -1;
+
 	private _minLevel = 2;
 
 	/** 获取地图最小缩放级别 */
@@ -133,14 +137,14 @@ export class TileMap extends BabylonTransformNode {
 		this._minLevel = value;
 	}
 
-	private _maxLevel = 19;
+	private _maxLevel = 20;
 
 	/** 获取地图最大缩放级别 */
 	public get maxLevel(): number {
 		return this._maxLevel;
 	}
 
-	/** 设置地图最大缩放级别 */
+	/** @deprecated 废弃，它会自动根据数据源的最大缩放级别设置 */
 	public set maxLevel(value: number) {
 		this._maxLevel = value;
 	}
@@ -169,7 +173,7 @@ export class TileMap extends BabylonTransformNode {
 				console.warn(`Map centralMeridian is ${this.lon0}, minLevel must > 0`);
 			}
 			this.projection = ProjectionFactory.createFromID(this.projection.ID, value);
-			this.updateSource();
+			this._updateSource();
 		}
 	}
 
@@ -184,12 +188,10 @@ export class TileMap extends BabylonTransformNode {
 			(this.loader as TileLoader).projection = proj;
 			this._resize();
 			this.reload();
-
 			if (this.debug > 0) {
 				console.log('Map Projection Changed:', proj.ID, proj.lon0);
 			}
-
-			this.notifyObservers('projection-changed', { projection: proj });
+			this._notifyObservers('projection-changed', { projection: proj });
 		}
 	}
 
@@ -205,15 +207,18 @@ export class TileMap extends BabylonTransformNode {
 			throw new Error('imgSource can not be empty');
 		}
 
-		this.projection = ProjectionFactory.createFromID(sources[0].projectionID, this.projection.lon0 as -90 | 0 | 90);
+		// 将第一个影像层的投影设置为地图投影
+		this.projection = ProjectionFactory.createFromID(
+			sources[0].projectionID,
+			this.projection.lon0 as -90 | 0 | 90
+		);
 		this.loader.imgSource = sources;
-		this.updateSource(true, false);
+		this._updateSource();
 
 		if (this.debug > 0) {
 			console.log('Img Source Changed:', sources);
 		}
-
-		this.notifyObservers('source-changed', { source: value });
+		this._notifyObservers('source-changed', { source: value });
 	}
 
 	/** 获取地形数据源 */
@@ -223,14 +228,16 @@ export class TileMap extends BabylonTransformNode {
 
 	/** 设置地形数据源 */
 	public set demSource(value: ISource | undefined) {
+		if (this.loader.demSource === value) {
+			return;
+		}
 		this.loader.demSource = value;
-		this.updateSource(false, true);
+		this._updateSource();
 
 		if (this.debug > 0) {
 			console.log('DEM Source Changed:', this.demSource);
 		}
-
-		this.notifyObservers('source-changed', { source: value });
+		this._notifyObservers('source-changed', { source: value });
 	}
 
 	/** 获取背景色 */
@@ -277,7 +284,6 @@ export class TileMap extends BabylonTransformNode {
 			loader,
 			rootTile,
 			minLevel = 2,
-			maxLevel = 20,
 			imgSource,
 			demSource,
 			backgroundColor,
@@ -288,11 +294,12 @@ export class TileMap extends BabylonTransformNode {
 		} = params;
 
 		this._minLevel = minLevel;
-		this._maxLevel = maxLevel;
 		this._LODThreshold = LODThreshold;
+		this.debug = debug;
 
 		// 创建加载器
 		this.loader = loader || new TileLoader(this._mapScene, ProjectionFactory.createWGS84(lon0));
+		(this.loader as TileLoader).debug = debug;
 
 		// 创建根瓦片
 		this.rootTile = rootTile || new Tile(0, 0, 0, this._mapScene);
@@ -307,7 +314,13 @@ export class TileMap extends BabylonTransformNode {
 			(this.loader as TileLoader).bounds = bounds;
 		}
 
-		this.debug = (this.loader as TileLoader).debug = debug;
+		// 根瓦片加入地图
+		this.rootTile.setParent(this);
+
+		// 调整地图大小
+		this._resize();
+
+		// 设置中央子午线
 		this.lon0 = lon0;
 
 		// 设置数据源
@@ -315,12 +328,6 @@ export class TileMap extends BabylonTransformNode {
 		if (demSource) {
 			this.demSource = demSource;
 		}
-
-		// 根瓦片加入地图
-		this.rootTile.setParent(this);
-
-		// 调整地图大小
-		this._resize();
 
 		// 初始化事件
 		this._initEvents();
@@ -330,13 +337,29 @@ export class TileMap extends BabylonTransformNode {
 	}
 
 	/**
-	 * 调整地图大小
+	 * 计算并缓存最大缩放级别
+	 */
+	private _getMaxLevel(): number {
+		let maxLevel = 0;
+		this.imgSource.forEach(source => (maxLevel = Math.max(maxLevel, source.maxLevel)));
+		if (this.demSource) {
+			maxLevel = Math.max(maxLevel, this.demSource.maxLevel);
+		}
+		if (this.debug) {
+			console.log('Max Level:', maxLevel);
+		}
+		return maxLevel;
+	}
+
+	/**
+	 * 调整地图大小（Babylon Y-up: 地图平铺在 X-Z 平面）
 	 */
 	private _resize(): void {
+		// 拉伸地图到投影大小（X-Z 平面，Y 为海拔）
 		this.rootTile.scaling.set(
 			this.projection.mapWidth,
-			this.projection.mapHeight,
-			this.projection.mapDepth
+			this.projection.mapDepth,    // = 1 (flat in Y, which is altitude)
+			this.projection.mapHeight
 		);
 		this.rootTile.computeWorldMatrix(true);
 	}
@@ -345,7 +368,7 @@ export class TileMap extends BabylonTransformNode {
 	 * 初始化事件
 	 */
 	private _initEvents(): void {
-		// 监听根瓦片事件并转发
+		// 监听根瓦片事件并转发（因为事件通过 _root 分发）
 		const events: Array<keyof TileMapEventMap> = [
 			'tile-created',
 			'tile-loaded',
@@ -355,7 +378,7 @@ export class TileMap extends BabylonTransformNode {
 
 		events.forEach(eventName => {
 			this.rootTile.addEventListener(eventName as any, (data: any) => {
-				this.notifyObservers(eventName, data);
+				this._notifyObservers(eventName, data);
 			});
 		});
 	}
@@ -364,9 +387,8 @@ export class TileMap extends BabylonTransformNode {
 	 * 准备就绪
 	 */
 	private _onReady(): void {
-		// 延迟触发 ready 事件
 		setTimeout(() => {
-			this.notifyObservers('ready', {});
+			this._notifyObservers('ready', {});
 		}, 0);
 	}
 
@@ -390,28 +412,27 @@ export class TileMap extends BabylonTransformNode {
 				minLevel: this._minLevel,
 				maxLevel: this._maxLevel,
 				LODThreshold: this._LODThreshold,
-				projection: this.projection,
 			});
 
-			this.notifyObservers('update', { delta: elapsed });
+			this._notifyObservers('update', { delta: elapsed });
 			this._lastUpdateTime = currentTime;
 		}
 	}
 
 	/**
-	 * 更新数据源
-	 * @param updateMaterial 是否重新加载材质
-	 * @param updateGeometry 是否重新加载几何体
+	 * 更新地图数据
 	 */
-	public updateSource(updateMaterial = true, updateGeometry = true): void {
-		this.rootTile.updateData(updateMaterial, updateGeometry);
+	private _updateSource(): void {
+		this._maxLevel = this._getMaxLevel();
+		this.rootTile.reload(false);
 	}
 
 	/**
 	 * 重新加载地图数据
+	 * @param dispose 是否销毁全部瓦片（默认 true）
 	 */
-	public reload(): void {
-		this.rootTile.reload(this.loader);
+	public reload(dispose = true): void {
+		this.rootTile.reload(dispose);
 	}
 
 	/**
@@ -450,7 +471,9 @@ export class TileMap extends BabylonTransformNode {
 	 * @returns 地理坐标（经度、纬度、高度）
 	 */
 	public world2geo(world: Vector3): Vector3 {
-		const map = BabylonVector3.TransformCoordinates(world, this.getWorldMatrix().invert());
+		const invMatrix = this.getWorldMatrix().clone();
+		invMatrix.invert();
+		const map = BabylonVector3.TransformCoordinates(world.clone(), invMatrix);
 		return this.map2geo(map);
 	}
 
@@ -459,6 +482,18 @@ export class TileMap extends BabylonTransformNode {
 	 */
 	public get downloading(): number {
 		return this.loader.downloadingThreads;
+	}
+
+	/**
+	 * 递归遍历瓦片树
+	 */
+	private _traverseTiles(node: BabylonTransformNode, callback: (tile: Tile) => void): void {
+		if (node instanceof Tile) {
+			callback(node);
+		}
+		node.getChildren().forEach(child => {
+			this._traverseTiles(child as BabylonTransformNode, callback);
+		});
 	}
 
 	/**
@@ -478,16 +513,14 @@ export class TileMap extends BabylonTransformNode {
 			inFrustum = 0,
 			maxLevel = 0;
 
-		this.rootTile.getChildren().forEach(child => {
-			if (child instanceof Tile) {
-				total++;
-				if (child.isLeaf) {
-					leaf++;
-					if (child.showing) visible++;
-					if (child.inFrustum) inFrustum++;
-				}
-				maxLevel = Math.max(maxLevel, child.z);
+		this._traverseTiles(this.rootTile, tile => {
+			total++;
+			if (tile.isLeaf) {
+				leaf++;
+				if (tile.showing) visible++;
+				if (tile.inFrustum) inFrustum++;
 			}
+			if (tile.z > maxLevel) maxLevel = tile.z;
 		});
 
 		return {
@@ -529,20 +562,18 @@ export class TileMap extends BabylonTransformNode {
 	/**
 	 * 通知观察者
 	 */
-	private notifyObservers<K extends keyof TileMapEventMap>(event: K, data: TileMapEventMap[K]): void {
+	private _notifyObservers<K extends keyof TileMapEventMap>(event: K, data: TileMapEventMap[K]): void {
 		const observable = this._observables.get(event);
 		if (observable) {
 			observable.notifyObservers(data, this._mask, event as string);
 		}
 	}
 
-	private _mask = -1;
-
 	/**
 	 * 释放地图资源
 	 */
 	public dispose(): void {
-		this.rootTile.unLoad(this.loader, true);
+		this.rootTile.unload();
 		this.setParent(null);
 	}
 }

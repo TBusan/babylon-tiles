@@ -186,10 +186,10 @@ export class TerrainRGBLoader implements ITileGeometryLoader<VertexData> {
 				const y = i / segments;
 				const z = dem[demIndex] || 0;
 
-				// Babylon.js 坐标系：x, y, z
-				positions.push(x - 0.5, y - 0.5, z);
+				// Babylon.js Y-up 坐标系：X水平, Y海拔, Z水平
+				positions.push(x - 0.5, z, y - 0.5);
 				uvs.push(x, 1 - y); // 翻转 Y 轴以匹配纹理坐标
-				normals.push(0, 0, 1); // 默认法线，后续可以计算真实法线
+				normals.push(0, 1, 0); // Y-up 法线
 			}
 		}
 
@@ -375,9 +375,9 @@ export class TerrainRGBLoaderWithWorker implements ITileGeometryLoader<VertexDat
 				const y = i / segments;
 				const z = dem[demIndex] || 0;
 
-				positions.push(x - 0.5, y - 0.5, z);
+				positions.push(x - 0.5, z, y - 0.5);
 				uvs.push(x, 1 - y);
-				normals.push(0, 0, 1);
+				normals.push(0, 1, 0);
 			}
 		}
 

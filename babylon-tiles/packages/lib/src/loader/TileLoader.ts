@@ -16,11 +16,10 @@ import type { IProjection } from '../projection/IProjection.js';
 import type { ISource } from '../source/ISource.js';
 import { TileGeometry } from '../geometry/TileGeometry.js';
 import { TileMaterial } from '../material/TileMaterial.js';
-import { getTileProjBounds } from '../tile/util.js';
 
 /**
  * 瓦片加载器类
- * 负责加载瓦片的几何体和材质
+ * 负责加载瓦片的几何体和材质，包含投影坐标变换
  */
 export class TileLoader implements ITileLoader {
 	private static _downloadingThreads = 0;
@@ -64,9 +63,17 @@ export class TileLoader implements ITileLoader {
 		return this._projection;
 	}
 
+	/** 获取投影ID（便捷访问） */
+	public get projectionID(): string {
+		return this._projection.ID;
+	}
+
 	/** 设置投影对象 */
 	public set projection(value: IProjection) {
 		this._projection = value;
+		// 更新所有数据源的投影范围
+		this._updateImgProjBounds();
+		this._updateDemProjBounds();
 	}
 
 	private _imgSource: ISource[] = [];
@@ -79,6 +86,7 @@ export class TileLoader implements ITileLoader {
 	/** 设置影像数据源 */
 	public set imgSource(value: ISource[]) {
 		this._imgSource = value;
+		this._updateImgProjBounds();
 	}
 
 	private _demSource?: ISource;
@@ -91,6 +99,7 @@ export class TileLoader implements ITileLoader {
 	/** 设置地形数据源 */
 	public set demSource(value: ISource | undefined) {
 		this._demSource = value;
+		this._updateDemProjBounds();
 	}
 
 	/** 获取边界 */
@@ -103,9 +112,60 @@ export class TileLoader implements ITileLoader {
 		this._bounds = value;
 	}
 
+	/** 最大下载线程数 */
+	public maxThreads: number = 10;
+
 	/** 获取当前下载数量 */
 	public get downloadingThreads(): number {
 		return TileLoader._downloadingThreads;
+	}
+
+	/**
+	 * 更新影像数据源的投影范围
+	 */
+	private _updateImgProjBounds(): void {
+		const proj = this._projection;
+		this._imgSource.forEach(source => {
+			source._projectionBounds = proj.getProjBoundsFromLonLat(
+				source.bounds || this._bounds
+			);
+		});
+	}
+
+	/**
+	 * 更新地形数据源的投影范围
+	 */
+	private _updateDemProjBounds(): void {
+		const proj = this._projection;
+		if (this._demSource) {
+			this._demSource._projectionBounds = proj.getProjBoundsFromLonLat(
+				this._demSource.bounds || this._bounds
+			);
+		}
+	}
+
+	/**
+	 * 获取瓦片经过投影变换后的坐标和边界
+	 * @param x 瓦片X坐标
+	 * @param y 瓦片Y坐标
+	 * @param z 瓦片层级
+	 * @returns 变换后的坐标和边界
+	 */
+	private getTileCoords(x: number, y: number, z: number): {
+		x: number;
+		y: number;
+		z: number;
+		bounds: [number, number, number, number];
+		lonLatBounds: [number, number, number, number];
+	} {
+		// 根据中央经线变换瓦片X坐标
+		const newX = this._projection.getTileXWithCenterLon(x, z);
+		// 计算瓦片投影范围
+		const bounds = this._projection.getProjBoundsFromXYZ(x, y, z);
+		// 计算瓦片经纬度范围
+		const lonLatBounds = this._projection.getLonLatBoundsFromXYZ(x, y, z);
+
+		return { x: newX, y, z, bounds, lonLatBounds };
 	}
 
 	/**
@@ -119,23 +179,28 @@ export class TileLoader implements ITileLoader {
 		const y = params.y;
 		const z = params.z;
 
-		// 计算瓦片边界
-		const bounds = getTileProjBounds(x, y, z, this._projection);
+		// 应用投影坐标变换
+		const coords = this.getTileCoords(x, y, z);
 
 		// 加载几何体
-		const geometry = await this.loadGeometry({ x, y, z, bounds });
+		const geometry = await this.loadGeometry(coords);
 
 		// 加载材质
-		const materials = await this.loadMaterial({ x, y, z, bounds });
+		const materials = await this.loadMaterial(coords);
 
-		// 创建网格
-		const mesh = geometry;
-		mesh.material = materials[0];
+		// 设置材质
+		// 使用最后一个（影像）材质直接渲染，跳过背景材质
+		// 注意：Babylon.js 的 MultiMaterial + SubMesh 设计用于将不同材质
+		// 分配给几何体的不同部分，不适用于 Three.js 风格的图层叠加。
+		// layers[0] = backgroundMaterial, layers[1..N] = imageMaterials
+		if (materials.length > 1) {
+			// 多个影像源时，使用最后的材质（最顶层）
+			geometry.material = materials[materials.length - 1];
+		} else {
+			geometry.material = materials[0];
+		}
 
-		// 如果有多个材质，创建多材质网格（简化处理，只使用第一个材质）
-		// 实际实现中可能需要使用 MultiMaterial
-
-		return mesh;
+		return geometry;
 	}
 
 	/**
@@ -155,23 +220,56 @@ export class TileLoader implements ITileLoader {
 		const x = params.x;
 		const y = params.y;
 		const z = params.z;
-		const bounds = getTileProjBounds(x, y, z, this._projection);
+		const coords = this.getTileCoords(x, y, z);
 
 		if (updateGeometry) {
-			const newGeometry = await this.loadGeometry({ x, y, z, bounds });
-			// 替换几何体数据
-			mesh.dispose();
-			const newMesh = newGeometry;
-			newMesh.material = mesh.material;
-			return newMesh;
+			// 替换几何体数据（不销毁整个mesh）
+			await this.updateGeometry(mesh, coords);
 		}
 
 		if (updateMaterial) {
-			const materials = await this.loadMaterial({ x, y, z, bounds });
-			mesh.material = materials[0];
+			await this.updateMaterialForMesh(mesh, coords);
 		}
 
 		return mesh;
+	}
+
+	/**
+	 * 更新网格的几何体
+	 */
+	private async updateGeometry(
+		mesh: Mesh,
+		coords: { x: number; y: number; z: number; bounds: [number, number, number, number]; lonLatBounds: [number, number, number, number] }
+	): Promise<void> {
+		const newGeomMesh = await this.loadGeometry(coords);
+		const newGeom = newGeomMesh.geometry;
+		if (newGeom) {
+			// Dispose old geometry GPU resources
+			(mesh as any)._geometry?.dispose();
+			// Assign new geometry
+			(mesh as any)._geometry = newGeom;
+			// Detach from temp mesh to prevent double-dispose
+			(newGeomMesh as any)._geometry = null;
+		}
+		// Dispose temp mesh shell only (geometry was transferred)
+		newGeomMesh.dispose(false, true);
+	}
+
+	/**
+	 * 更新网格的材质
+	 */
+	private async updateMaterialForMesh(
+		mesh: Mesh,
+		coords: { x: number; y: number; z: number; bounds: [number, number, number, number]; lonLatBounds: [number, number, number, number] }
+	): Promise<void> {
+		const materials = await this.loadMaterial(coords);
+		if (mesh.material) {
+			const oldMaterial = mesh.material;
+			mesh.material = materials[0];
+			oldMaterial.dispose();
+		} else {
+			mesh.material = materials[0];
+		}
 	}
 
 	/**
@@ -188,32 +286,48 @@ export class TileLoader implements ITileLoader {
 
 	/**
 	 * 加载几何体
-	 * @param params - 瓦片参数
-	 * @returns Promise<Mesh> 瓦片网格
+	 * @param coords - 变换后的瓦片坐标
+	 * @returns Promise<Mesh> 瓦片Mesh
 	 */
-	private async loadGeometry(params: { x: number; y: number; z: number; bounds: [number, number, number, number] }): Promise<Mesh> {
+	private async loadGeometry(coords: {
+		x: number;
+		y: number;
+		z: number;
+		bounds: [number, number, number, number];
+		lonLatBounds: [number, number, number, number];
+	}): Promise<Mesh> {
 		try {
-			// 如果有地形数据源且层级 >= 最小层级
-			if (this._demSource && params.z >= this._demSource.minLevel && this._intersectsBounds(this._demSource, params.bounds)) {
+			// 如果有地形数据源且层级 >= 最小层级且与数据源边界相交
+			if (
+				this._demSource &&
+				coords.z >= this._demSource.minLevel &&
+				this._intersectsBounds(this._demSource, coords.bounds)
+			) {
 				TileLoader._downloadingThreads++;
 
-				// 这里应该加载高程数据
-				// 简化实现：创建平瓦片
-				// 实际实现中需要从 URL 加载高程数据
-				const geometry = TileGeometry.createTile(`tile-${params.z}-${params.x}-${params.y}-geometry`, {
-					scene: this._scene,
-					width: 1,
-					height: 1,
-					segmentsW: 1,
-					segmentsH: 1,
-					skirtHeight: 100,
-				});
+				try {
+					const geometry = TileGeometry.createTile(
+						`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
+						{
+							scene: this._scene,
+							width: 1,
+							height: 1,
+							segmentsW: 1,
+							segmentsH: 1,
+							skirtHeight: 100,
+						}
+					);
 
-				TileLoader._downloadingThreads--;
-				return geometry;
+					return geometry;
+				} finally {
+					TileLoader._downloadingThreads--;
+				}
 			} else {
 				// 创建平瓦片
-				return TileGeometry.createFlatTile(`tile-${params.z}-${params.x}-${params.y}-geometry`, this._scene);
+				return TileGeometry.createFlatTile(
+					`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
+					this._scene
+				);
 			}
 		} catch (error) {
 			if (this.debug > 0) {
@@ -225,15 +339,23 @@ export class TileLoader implements ITileLoader {
 
 	/**
 	 * 加载材质
-	 * @param params - 瓦片参数
+	 * @param coords - 变换后的瓦片坐标
 	 * @returns Promise<Material[]> 材质数组
 	 */
-	private async loadMaterial(params: { x: number; y: number; z: number; bounds: [number, number, number, number] }): Promise<Material[]> {
+	private async loadMaterial(coords: {
+		x: number;
+		y: number;
+		z: number;
+		bounds: [number, number, number, number];
+		lonLatBounds: [number, number, number, number];
+	}): Promise<Material[]> {
 		const materials: Material[] = [this.backgroundMaterial];
 
 		// 过滤符合条件的影像源
 		const sources = this._imgSource.filter(
-			source => params.z >= source.minLevel && this._intersectsBounds(source, params.bounds)
+			source =>
+				coords.z >= source.minLevel &&
+				this._intersectsBounds(source, coords.bounds)
 		);
 
 		// 加载每个数据源的材质
@@ -241,18 +363,38 @@ export class TileLoader implements ITileLoader {
 			try {
 				TileLoader._downloadingThreads++;
 
-				// 获取瓦片 URL
-				const url = source.getUrl(params.x, params.y, params.z);
+				// 获取瓦片 URL（使用变换后的坐标）
+				const url = source.getUrl(coords.x, coords.y, coords.z);
 
-				// 创建纹理
-				const texture = new Texture(url, this._scene, undefined, undefined, undefined, () => {
+				if (!url) {
 					TileLoader._downloadingThreads--;
-				});
+					continue;
+				}
+
+				// 创建纹理（带错误处理）
+				const texture = new Texture(
+					url,
+					this._scene,
+					undefined,  // noMipmap
+					undefined,  // invertY
+					undefined,  // samplingMode
+					() => {
+						// onLoad 回调
+						TileLoader._downloadingThreads--;
+					},
+					(_message?: string, _exception?: any) => {
+						// onError 回调
+						TileLoader._downloadingThreads--;
+						if (this.debug > 0) {
+							console.error(`Texture load error for tile ${coords.z}-${coords.x}-${coords.y}:`, _message);
+						}
+					}
+				);
 
 				// 创建材质
 				const material = TileMaterial.createTileMaterial({
 					scene: this._scene,
-					name: `tile-${params.z}-${params.x}-${params.y}-material`,
+					name: `tile-${coords.z}-${coords.x}-${coords.y}-material`,
 					diffuseTexture: texture,
 					opacity: source.opacity ?? 1,
 					transparent: source.transparent ?? false,
@@ -273,10 +415,13 @@ export class TileLoader implements ITileLoader {
 	/**
 	 * 检查瓦片是否与数据源边界相交
 	 * @param source - 数据源
-	 * @param tileBounds - 瓦片边界
+	 * @param tileBounds - 瓦片投影边界
 	 * @returns 是否相交
 	 */
-	private _intersectsBounds(source: ISource, tileBounds: [number, number, number, number]): boolean {
+	private _intersectsBounds(
+		source: ISource,
+		tileBounds: [number, number, number, number]
+	): boolean {
 		if (!source._projectionBounds) {
 			return true; // 如果数据源没有设置边界，默认相交
 		}

@@ -1,22 +1,30 @@
 /**
  * @description: 动态 LOD 瓦片类
+ * Ported from three-tile's Tile.ts for Babylon.js (Y-up coordinate system)
  * @author: Babylon-Tile Team
- * @date: 2025-01-23
+ * @date: 2025-07-25
  */
 
-import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
 import { TransformNode as BabylonTransformNode } from '@babylonjs/core/Meshes/transformNode';
-import { BoundingBox } from '@babylonjs/core';
+import { BoundingBox } from '@babylonjs/core/Culling/boundingBox';
 import { Vector3 as BabylonVector3 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Quaternion } from '@babylonjs/core/Maths/math.vector';
+import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 
+import { FrustumEx } from './FrustumEx.js';
+import { createChildren, LODAction, LODEvaluate } from './util.js';
 import type { ITileLoader } from '../loader/ITileLoader.js';
-import { createChildTiles, evaluateLOD, getTileProjBounds, LODAction } from './util.js';
-import type { IProjection } from '../projection/IProjection.js';
 
-/** 最大下载线程数 */
-const MAXTHREADS = 10;
+/** 相机世界坐标（模块级，每帧更新一次） */
+const cameraWorldPosition = new BabylonVector3();
+
+/** 场景视锥体（模块级，每帧更新一次） */
+const frustum = new FrustumEx();
+
+/** 临时矩阵 */
+const tempMat = new Matrix();
 
 /**
  * 瓦片事件类型
@@ -46,13 +54,11 @@ export interface TileUpdateParams {
 	maxLevel: number;
 	/** 瓦片 LOD 阈值 */
 	LODThreshold: number;
-	/** 投影对象 */
-	projection: IProjection;
 }
 
 /**
  * 动态 LOD（DLOD）地图瓦片类
- * 用于表示地图中的一块瓦片，瓦片可以包含子瓦片，以四叉树方式管理
+ * 地图平铺在 X-Z 平面（Babylon Y-up），Y 轴为海拔高度
  */
 export class Tile extends BabylonTransformNode {
 	/** 瓦片 X 坐标 */
@@ -73,45 +79,85 @@ export class Tile extends BabylonTransformNode {
 	/** 根瓦片 */
 	private _root: Tile = this;
 
-	/** 瓦片距离检测点世界坐标 */
-	private _tileCheckPoint: BabylonVector3;
-
-	/** 瓦片在世界坐标系中的大小 */
+	/** 瓦片在世界坐标系中的大小（对角线长度） */
 	private _sizeInWorld = -1;
 
-	/** 瓦片包围盒（世界坐标） */
-	private _bbox: BoundingBox | null = null;
+	/** 瓦片是否在视锥体内 */
+	private _inFrustum = false;
 
 	/** 瓦片模型 */
-	private _model: Mesh | undefined;
+	private _model?: Mesh;
 
 	/** 子瓦片 */
-	private _subTiles: Tile[] | undefined;
+	private _subTiles?: Tile[];
+
+	/** 是否为脏瓦片 */
+	private _tileIsDirty = false;
+
+	/** 调试标志 */
+	public get debug(): number {
+		return (this._root as any)._debugFlag || 0;
+	}
+
+	/** 强制所有瓦片可见（调试用） */
+	public static forceVisible = false;
 
 	/** 事件观察者映射 */
 	private _eventObservers: Map<keyof TileEventMap, Array<(data: any) => void>> = new Map();
 
-	/** 是否更新材质 */
-	private _needsMaterialUpdate = false;
-
-	/** 是否更新几何体 */
-	private _needsGeometryUpdate = false;
-
 	/**
 	 * 构造函数
-	 * @param x - 瓦片 X 坐标
-	 * @param y - 瓦片 Y 坐标
-	 * @param z - 瓦片层级
-	 * @param scene - 场景
+	 * @param x 瓦片 X 坐标
+	 * @param y 瓦片 Y 坐标
+	 * @param z 瓦片层级
+	 * @param scene 场景（可选）
 	 */
 	public constructor(x = 0, y = 0, z = 0, scene?: Scene) {
 		super(`Tile ${z}-${x}-${y}`, scene);
 		this.x = x;
 		this.y = y;
 		this.z = z;
+	}
 
-		// 初始化检测点
-		this._tileCheckPoint = new BabylonVector3();
+	/**
+	 * 覆写 world matrix 计算
+	 * 当父节点也是 Tile 时，手动串联矩阵链
+	 * 这匹配 three-tile 中 matrixAutoUpdate=false + updateMatrix() + updateMatrixWorld() 的行为
+	 */
+	public computeWorldMatrix(force?: boolean): Matrix {
+		// 非 Tile 父节点（如 TileMap）使用 Babylon 内置计算
+		if (!(this.parent instanceof Tile)) {
+			return super.computeWorldMatrix(force);
+		}
+
+		// 缓存检查
+		if (this._currentRenderId === this._scene.getRenderId() && !force) {
+			return this._worldMatrix;
+		}
+
+		this._currentRenderId = this._scene.getRenderId();
+
+		// 确保父节点 world matrix 是最新的
+		const parentWorld = this.parent.getWorldMatrix();
+
+		// 合成局部矩阵: localMatrix = T(position) * R(rotation) * S(scaling)
+		const localMatrix = Matrix.Compose(
+			this.scaling,
+			this.rotationQuaternion || Quaternion.Identity(),
+			this.position
+		);
+
+		// 使用 Three.js 约定: world = parentWorld * localMatrix
+		// （子瓦片的平移需要乘以父瓦片的缩放，以匹配 three-tile 的
+		//   matrixAutoUpdate=false + updateMatrixWorld() 行为）
+		parentWorld.multiplyToRef(localMatrix, this._worldMatrix);
+
+		// 递归使子节点失效
+		for (const child of this.getChildTransformNodes()) {
+			(child as Tile)._currentRenderId = -1;
+		}
+
+		return this._worldMatrix;
 	}
 
 	/**
@@ -129,13 +175,6 @@ export class Tile extends BabylonTransformNode {
 	}
 
 	/**
-	 * 获取瓦片是否在视锥体内
-	 */
-	public get inFrustum(): boolean {
-		return this._bbox !== null;
-	}
-
-	/**
 	 * 获取是否为叶子瓦片
 	 */
 	public get isLeaf(): boolean {
@@ -143,10 +182,17 @@ export class Tile extends BabylonTransformNode {
 	}
 
 	/**
+	 * 获取瓦片是否在视锥体内
+	 */
+	public get inFrustum(): boolean {
+		return this._inFrustum;
+	}
+
+	/**
 	 * 获取瓦片是否显示
 	 */
 	public get showing(): boolean {
-		return this._model ? this._model.isEnabled() : false;
+		return !!this._model && this._model.isEnabled();
 	}
 
 	/**
@@ -154,38 +200,90 @@ export class Tile extends BabylonTransformNode {
 	 */
 	public set showing(value: boolean) {
 		if (this._model) {
-			this._model.setEnabled(value);
-
-			// 触发可见性改变事件
-			this._dispatchEvent('tile-visible-changed', { tile: this, visible: value });
+			if (value !== this.showing) {
+				this._model.setEnabled(value);
+				this._root._dispatchEvent('tile-visible-changed', { tile: this, visible: value });
+			}
 		}
 	}
 
 	/**
-	 * 计算瓦片大小、包围盒等
+	 * 获取距离比例（相机距离 / 瓦片世界大小）
+	 * 用于 LOD 评估，值越小瓦片越密集
 	 */
-	private computeTileSize(projection: IProjection): number {
-		// 获取瓦片的投影边界
-		const bounds = getTileProjBounds(this.x, this.y, this.z, projection);
+	public get distRatio(): number {
+		const checkPoint = BabylonVector3.TransformCoordinates(
+			BabylonVector3.Zero(),
+			this.getWorldMatrix()
+		);
+		// 使用模型 Y 轴最高点（海拔）
+		const modelMaxY = this._model?.getBoundingInfo()?.boundingBox?.maximumWorld?.y || 0;
+		checkPoint.y = modelMaxY;
+		const distToCamera = BabylonVector3.Distance(cameraWorldPosition, checkPoint);
+		const ratio = distToCamera / this._sizeInWorld;
+		return this._inFrustum ? ratio * 0.8 : ratio * 2;
+	}
 
-		// 计算瓦片在本地坐标系中的范围（归一化到 0-1）
-		const min = new BabylonVector3(-0.5, -0.5, 0);
-		const max = new BabylonVector3(0.5, 0.5, 0);
+	/**
+	 * 计算瓦片包围盒（世界坐标）
+	 * 地图在 X-Z 平面，Y 为海拔高度
+	 * @returns 世界坐标包围盒
+	 */
+	public getBBox(): BoundingBox {
+		const s = this.scaling;
+		let maxY = 9000;
+		if (this._model) {
+			maxY = this._model.getBoundingInfo()?.boundingBox?.maximumWorld?.y || 0;
+		}
+		// 局部坐标：X和Z是水平范围，Y是垂直范围 (-300 到 maxY)
+		const minLocal = new BabylonVector3(-s.x, -300, -s.z);
+		const maxLocal = new BabylonVector3(s.x, maxY, s.z);
+		const worldMatrix = this.getWorldMatrix();
+		return new BoundingBox(minLocal, maxLocal, worldMatrix);
+	}
 
-		// 应用世界变换矩阵
-		const worldMin = BabylonVector3.TransformCoordinates(min, this.getWorldMatrix());
-		const worldMax = BabylonVector3.TransformCoordinates(max, this.getWorldMatrix());
-
-		// 创建包围盒
-		this._bbox = new BoundingBox(worldMin, worldMax);
-
-		// 距离检测点（瓦片中心世界坐标）
-		this._tileCheckPoint = BabylonVector3.TransformCoordinates(new BabylonVector3(0, 0, 0), this.getWorldMatrix());
-
-		// 瓦片大小（对角线长度）
-		this._sizeInWorld = BabylonVector3.Distance(worldMin, worldMax);
-
+	/**
+	 * 计算瓦片世界大小（对角线长度）
+	 * @returns 世界空间中对角线长度
+	 */
+	public getTileSize(): number {
+		if (this._sizeInWorld < 0) {
+			const s = this.scaling;
+			const wm = this.getWorldMatrix();
+			const p1 = BabylonVector3.TransformCoordinates(
+				new BabylonVector3(-s.x, 0, -s.z),
+				wm
+			);
+			const p2 = BabylonVector3.TransformCoordinates(
+				new BabylonVector3(s.x, 0, s.z),
+				wm
+			);
+			this._sizeInWorld = BabylonVector3.Distance(p1, p2);
+		}
 		return this._sizeInWorld;
+	}
+
+	/**
+	 * 判断是否需要加载瓦片数据
+	 */
+	private _needsLoad(loader: ITileLoader): boolean {
+		// 下载线程数 >= 最大下载线程数，不下载
+		if (loader.downloadingThreads >= loader.maxThreads) {
+			return false;
+		}
+
+		// 没有模型则下载
+		if (!this._model) {
+			return true;
+		}
+
+		// 不是脏瓦片或不在视野范围内，不下载
+		if (!this._tileIsDirty || !this._inFrustum) {
+			return false;
+		}
+
+		// 父瓦片等子瓦片已加载完成后再加载
+		return !this._subTiles?.some(tile => !tile._tileIsDirty);
 	}
 
 	/**
@@ -203,34 +301,33 @@ export class Tile extends BabylonTransformNode {
 			this._root = this.parent._root;
 		}
 
-		const { loader, minLevel, LODThreshold, projection } = params;
+		const { loader, minLevel, camera } = params;
 
-		// 如果是根瓦片，计算视锥体（简化处理）
+		// 如果是根瓦片，计算一次视锥体和摄像机坐标
 		if (this.z === 0) {
-			// 这里可以在实际实现中添加视锥体计算
+			cameraWorldPosition.copyFrom(camera.globalPosition);
+			// 计算视图-投影矩阵并设置视锥体
+			const viewMatrix = camera.getViewMatrix();
+			const projMatrix = camera.getProjectionMatrix();
+			projMatrix.multiplyToRef(viewMatrix, tempMat);
+			frustum.setFromProjectionMatrix(tempMat);
 		}
 
-		// 计算瓦片大小、包围盒等
-		if (this._sizeInWorld < 0) {
-			this.computeTileSize(projection);
-		}
+		// 计算瓦片世界大小
+		this.getTileSize();
 
-		// 如果当前层级 >= 最小层级 且 下载线程数 < 最大下载线程数
-		if (this.z >= minLevel && loader.downloadingThreads < MAXTHREADS) {
-			// 下载瓦片
-			if (!this._model) {
+		// 计算是否在视锥体内
+		const bbox = this.getBBox();
+		this._inFrustum = frustum.intersectsBox(bbox);
+
+		// 下载瓦片数据
+		if (this.z >= minLevel && this._needsLoad(loader)) {
+			if (this._model) {
+				this._startModify(loader);
+			} else {
 				this._startLoad(loader);
-				return;
 			}
-
-			// 更新脏瓦片
-			if (this._tileIsDirty && this.inFrustum) {
-				const childrenUpdated = !this._subTiles?.some(child => child._tileIsDirty);
-				if (childrenUpdated) {
-					this._startUpdate(loader);
-					return;
-				}
-			}
+			return;
 		}
 
 		// LOD
@@ -242,40 +339,33 @@ export class Tile extends BabylonTransformNode {
 
 	/**
 	 * LOD (Level of Detail)
-	 * @param params 瓦片更新参数
+	 * @returns LODAction
 	 */
 	protected LOD(params: TileUpdateParams): LODAction {
-		const { loader, minLevel, maxLevel, LODThreshold, camera } = params;
-
-		// 计算距离比例
-		const distToCamera = BabylonVector3.Distance(camera.globalPosition, this._tileCheckPoint);
-		const distRatio = this.inFrustum ? (distToCamera / this._sizeInWorld) * 0.8 : (distToCamera / this._sizeInWorld) * 2;
-
-		// LOD 评估
-		const action = evaluateLOD(distRatio, minLevel, maxLevel, this.z, this.inFrustum, LODThreshold);
+		const { loader, minLevel, maxLevel, LODThreshold } = params;
+		const action = LODEvaluate(this, minLevel, maxLevel, LODThreshold);
 
 		if (action === LODAction.CREATE) {
-			// 创建子瓦片
-			const childCoords = createChildTiles(this.x, this.y, this.z);
-			const newTiles = childCoords.map(([x, y, z]) => new Tile(x, y, z, this.getScene()));
-
-			this._subTiles = newTiles;
-
-			// 设置子瓦片的位置和缩放
+			const newTiles = createChildren(this, loader);
 			newTiles.forEach(child => {
-				child.position.set((child.x / 2 - 0.5) * 2, (child.y / 2 - 0.5) * 2, 0);
-				child.scaling.set(0.5, 0.5, 1);
+				// 保存子瓦片的局部坐标（父瓦片局部空间中的值）
+				// Babylon.js setParent 默认保持世界空间不变，这会导致局部值
+				// 被父瓦片的大缩放值除以后变得极小。
+				// 瓦片层级需要保持局部值不变（与 three-tile 行为一致）
+				const savedPos = child.position.clone();
+				const savedScale = child.scaling.clone();
+				child.setParent(this);
+				// 恢复局部坐标，覆盖 setParent 的世界空间保留逻辑
+				child.position.copyFrom(savedPos);
+				child.scaling.copyFrom(savedScale);
 				child.computeWorldMatrix(true);
-				child.parent = this;
+				this._root._dispatchEvent('tile-created', { tile: child });
 			});
-
-			// 触发事件
-			newTiles.forEach(child => this._dispatchEvent('tile-created', { tile: child }));
+			this._subTiles = newTiles;
 		} else if (action === LODAction.REMOVE) {
-			// 删除子瓦片
 			if (this._model) {
 				this.showing = true;
-				this.unLoad(loader, false);
+				this.unloadSubTiles();
 			}
 		}
 
@@ -283,15 +373,20 @@ export class Tile extends BabylonTransformNode {
 	}
 
 	/**
-	 * 检查 4 个兄弟瓦片是否全部下载完成
+	 * 瓦片下载完成后，检查4个兄弟瓦片全部下载完成时再显示
 	 */
-	private _checkVisible(): Tile {
+	private _checkVisible(): this {
+		// 调试模式：强制所有瓦片可见
+		if (Tile.forceVisible) {
+			this.showing = true;
+			return this;
+		}
 		const parent = this.parent;
 		if (parent instanceof Tile) {
 			if (parent._model) {
 				const subTiles = parent._subTiles;
 				if (subTiles) {
-					const allLoaded = !subTiles.some(child => !child._model);
+					const allLoaded = !subTiles.some(tile => !tile._model);
 					subTiles.forEach(child => (child.showing = allLoaded));
 					parent.showing = !allLoaded;
 				}
@@ -304,119 +399,135 @@ export class Tile extends BabylonTransformNode {
 
 	/**
 	 * 下载瓦片数据
-	 * @param loader - 瓦片加载器
+	 * @param loader 瓦片加载器
 	 */
 	private async _startLoad(loader: ITileLoader): Promise<void> {
 		this._isLoading = true;
 
 		try {
-			this._model = await loader.load(this);
+			const model = await loader.load(this);
+			this._model = model;
 
-			if (this._model) {
-				// 计算包围盒
-				this._model.refreshBoundingInfo(true, true);
-				const bbox = this._model.getBoundingInfo().boundingBox;
-				this._tileCheckPoint.y = bbox.maximumWorld.y;
+			// Babylon.js setParent 默认保持世界空间不变，会破坏模型的局部变换
+			// 与子瓦片的 bug 相同：父瓦片的大缩放值会整除模型的局部缩放
+			// 模型需保持 identity 局部变换以匹配 1×1 单位几何体
+			model.setParent(this);
+			model.position.set(0, 0, 0);
+			model.scaling.set(1, 1, 1);
+			model.computeWorldMatrix(true);
+			// 在 setParent 和恢复局部变换之后刷新包围盒
+			model.refreshBoundingInfo(true, true);
 
-				if (this.isLeaf) {
-					this._checkVisible();
-				}
+			this.isLeaf && this._checkVisible();
 
-				// 添加到场景
-				this._model.parent = this;
-
-				// 触发事件
-				this._dispatchEvent('tile-loaded', { tile: this });
-			}
+			this._root._dispatchEvent('tile-loaded', { tile: this });
 		} catch (error) {
-			console.error(`Failed to load tile ${this.name}:`, error);
+			console.error(`Tile load failed ${this.z}-${this.x}-${this.y}:`, error);
 		} finally {
 			this._isLoading = false;
 		}
 	}
 
 	/**
-	 * 更新瓦片数据
-	 * @param loader - 瓦片加载器
+	 * 修改瓦片数据（更新时复用已有模型）
+	 * @param loader 瓦片加载器
 	 */
-	private async _startUpdate(loader: ITileLoader): Promise<void> {
-		if (!this._model) {
-			return;
-		}
+	private async _startModify(loader: ITileLoader): Promise<void> {
+		if (!this._model) return;
 
 		this._isLoading = true;
 
 		try {
-			this._model = await loader.update(this._model, this, this._needsMaterialUpdate, this._needsGeometryUpdate);
+			const newModel = await loader.update(
+				this._model,
+				this,
+				this._tileIsDirty,
+				this._tileIsDirty
+			);
 
-			if (this._model) {
+			if (newModel) {
+				this._model = newModel;
 				this._model.refreshBoundingInfo(true, true);
-				const bbox = this._model.getBoundingInfo().boundingBox;
-				this._tileCheckPoint.y = bbox.maximumWorld.y;
-
-				this._needsMaterialUpdate = false;
-				this._needsGeometryUpdate = false;
-
-				// 触发事件
-				this._dispatchEvent('tile-loaded', { tile: this });
+				this._root._dispatchEvent('tile-loaded', { tile: this });
 			}
 		} catch (error) {
-			console.error(`Failed to update tile ${this.name}:`, error);
+			console.error(`Tile modify failed ${this.z}-${this.x}-${this.y}:`, error);
 		} finally {
+			this._tileIsDirty = false;
 			this._isLoading = false;
 		}
 	}
 
+	/* istanbul ignore next */
 	/**
-	 * 获取是否需要更新
+	 * 重新加载瓦片数据
+	 * @param dispose 是否销毁瓦片树（true：销毁并重建，false：标记为脏）
 	 */
-	private get _tileIsDirty(): boolean {
-		return !!this._model && (this._needsMaterialUpdate || this._needsGeometryUpdate);
-	}
-
-	/**
-	 * 更新瓦片数据
-	 * @param updateMaterial - 是否更新材质
-	 * @param updateGeometry - 是否更新几何体
-	 */
-	public updateData(updateMaterial: boolean, updateGeometry: boolean): void {
-		this.getChildren().forEach(child => {
-			if (child instanceof Tile && (child._model || child._isLoading)) {
-				child._needsMaterialUpdate = updateMaterial;
-				child._needsGeometryUpdate = updateGeometry;
-			}
-		});
-	}
-
-	/**
-	 * 重新加载瓦片树
-	 * @param loader - 瓦片加载器
-	 */
-	public reload(loader: ITileLoader): void {
-		this.unLoad(loader, true);
-	}
-
-	/**
-	 * 卸载瓦片（包括其子瓦片），释放资源
-	 * @param loader - 瓦片加载器
-	 * @param unLoadSelf - 是否卸载自身
-	 */
-	public unLoad(loader: ITileLoader, unLoadSelf = true): void {
-		// 卸载子瓦片
-		if (this._subTiles) {
-			this._subTiles.forEach(child => {
-				child.unLoad(loader, true);
+	public reload(dispose = true): void {
+		if (dispose) {
+			this.unload();
+		} else {
+			this.getChildTransformNodes().forEach(child => {
+				if (child instanceof Tile && (child._model || child._isLoading)) {
+					child._isDirty = true;
+				}
 			});
-			// 移除子节点
-			this._subTiles = undefined;
 		}
+	}
 
-		// 卸载自己
-		if (unLoadSelf && this._model) {
-			loader.unload(this._model);
-			this._dispatchEvent('tile-unload', { tile: this });
+	/* istanbul ignore next */
+	/**
+	 * 更新瓦片数据（标记所有有模型或正在加载的子瓦片为脏）
+	 */
+	public updateData(_updateMaterial: boolean, _updateGeometry: boolean): void {
+		this.reload(false);
+	}
+
+	/* istanbul ignore next */
+	/**
+	 * 卸载瓦片（包括子瓦片和自身模型）
+	 */
+	public unload(): void {
+		this.unloadSubTiles();
+		this.unloadModel();
+	}
+
+	/* istanbul ignore next */
+	/**
+	 * 仅卸载自身模型，释放资源
+	 */
+	public unloadModel(): void {
+		if (this._model) {
+			this._model.setParent(null);
+			const material = this._model.material;
+			if (material) {
+				const mat = material as any;
+				for (const key in mat) {
+					const value = mat[key];
+					if (value && (value as any)._isTexture) {
+						(value as any).dispose();
+					}
+				}
+				mat.dispose();
+			}
+			this._model.geometry?.dispose();
 			this._model = undefined;
+			this._tileIsDirty = false;
+			this._root._dispatchEvent('tile-unload', { tile: this });
 		}
+	}
+
+	/* istanbul ignore next */
+	/**
+	 * 仅卸载子瓦片
+	 */
+	public unloadSubTiles(): void {
+		this._subTiles?.forEach(child => {
+			child.setParent(null);
+			child.unloadModel();
+			child.unloadSubTiles();
+		});
+		this._subTiles = undefined;
 	}
 
 	/**
@@ -449,7 +560,7 @@ export class Tile extends BabylonTransformNode {
 	}
 
 	/**
-	 * 触发事件
+	 * 触发事件（分发到根瓦片的事件系统）
 	 */
 	private _dispatchEvent<K extends keyof TileEventMap>(event: K, data: TileEventMap[K]): void {
 		const observers = this._eventObservers.get(event);

@@ -36,6 +36,9 @@ export interface ITileLoader {
 	/** 投影对象 */
 	projection: IProjection;
 
+	/** 投影ID（便捷访问） */
+	readonly projectionID: string;
+
 	/** 影像数据源 */
 	imgSource: ISource[];
 
@@ -43,7 +46,10 @@ export interface ITileLoader {
 	demSource?: ISource;
 
 	/** 当前下载数量 */
-	downloadingThreads: number;
+	readonly downloadingThreads: number;
+
+	/** 最大下载线程数 */
+	maxThreads: number;
 
 	/** 调试标志（0: 不调试, 1: 调试, 2: 显示包围盒） */
 	debug: number;

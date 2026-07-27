@@ -15,18 +15,18 @@ import { WebMercatorProjection } from './WebMercatorProjection.js';
 export class ProjectionFactory {
 	/**
 	 * 根据投影类型 ID 和中央子午线创建投影对象
-	 * @param projectionID - 投影类型标识（'EPSG:4326' 或 'EPSG:3857'）
+	 * @param projectionID - 投影类型标识（'4326' 或 '3857'）
 	 * @param lon0 - 中央子午线经度（-90, 0, 90），默认为 0
 	 * @returns 投影对象
 	 */
 	public static createFromID(projectionID: string, lon0: -90 | 0 | 90 = 0): IProjection {
 		switch (projectionID) {
-			case 'EPSG:4326':
-				return new WGS84Projection(lon0);
-			case 'EPSG:3857':
+			case '3857':
 				return new WebMercatorProjection(lon0);
+			case '4326':
+				return new WGS84Projection(lon0);
 			default:
-				console.warn(`Unknown projection ID: ${projectionID}, using EPSG:4326`);
+				console.warn(`Unknown projection ID: ${projectionID}, using 4326`);
 				return new WGS84Projection(lon0);
 		}
 	}

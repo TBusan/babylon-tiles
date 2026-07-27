@@ -29,7 +29,7 @@ export interface GeoPoint {
  * 定义了地理坐标（经纬度）与投影坐标（米）之间的转换
  */
 export interface IProjection {
-	/** 投影类型标识（如 'EPSG:4326', 'EPSG:3857'） */
+	/** 投影类型标识（'4326' 或 '3857'） */
 	readonly ID: string;
 
 	/** 中央子午线经度（-90, 0, 90） */
@@ -66,4 +66,30 @@ export interface IProjection {
 	 * @returns 投影坐标边界 [minX, minY, maxX, maxY]
 	 */
 	getProjBoundsFromLonLat(bounds: [number, number, number, number]): [number, number, number, number];
+
+	/**
+	 * 根据中央经线取得变换后的瓦片X坐标
+	 * @param x - 瓦片 X 坐标
+	 * @param z - 瓦片层级
+	 * @returns 变换后的瓦片 X 坐标
+	 */
+	getTileXWithCenterLon(x: number, z: number): number;
+
+	/**
+	 * 取得瓦片边界投影坐标范围
+	 * @param x - 瓦片 X 坐标
+	 * @param y - 瓦片 Y 坐标
+	 * @param z - 瓦片层级
+	 * @returns 投影坐标边界 [minX, minY, maxX, maxY]
+	 */
+	getProjBoundsFromXYZ(x: number, y: number, z: number): [number, number, number, number];
+
+	/**
+	 * 取得瓦片经纬度边界范围
+	 * @param x - 瓦片 X 坐标
+	 * @param y - 瓦片 Y 坐标
+	 * @param z - 瓦片层级
+	 * @returns 经纬度边界 [minLon, minLat, maxLon, maxLat]
+	 */
+	getLonLatBoundsFromXYZ(x: number, y: number, z: number): [number, number, number, number];
 }

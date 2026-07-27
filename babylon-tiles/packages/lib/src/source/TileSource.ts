@@ -55,7 +55,7 @@ export class TileSource implements ISource {
 	public maxLevel: number = 18;
 
 	/** 投影类型标识 */
-	public projectionID: string = 'EPSG:3857';
+	public projectionID: string = '3857';
 
 	/** URL 模板 */
 	public url: string = '';
@@ -66,8 +66,8 @@ export class TileSource implements ISource {
 	/** 材质透明度（0-1） */
 	public opacity: number = 1.0;
 
-	/** 是否透明 */
-	public transparent: boolean = true;
+	/** 是否透明（地图瓦片通常为不透明的图片，设为 false 以在 opaque 渲染通道中渲染） */
+	public transparent: boolean = false;
 
 	/** 是否使用 TMS 瓦片坐标系 */
 	public isTMS: boolean = false;

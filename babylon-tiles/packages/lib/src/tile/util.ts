@@ -1,244 +1,199 @@
 /**
  * @description: 瓦片工具函数
+ * Ported from three-tile's tile/util.ts for Babylon.js (Y-up coordinate system)
  * @author: Babylon-Tile Team
- * @date: 2025-01-23
+ * @date: 2025-07-25
  */
 
-import type { IProjection } from '../projection/IProjection.js';
+import type { Scene } from '@babylonjs/core/scene';
+
+import { Tile } from './Tile.js';
+import type { ITileLoader } from '../loader/ITileLoader.js';
 
 /**
  * LOD 动作类型
  */
 export enum LODAction {
-	/** 保持当前状态 */
+	/** 无操作 */
 	NONE = 'none',
-	/** 创建子瓦片 */
+	/** 创建子瓦片（细化） */
 	CREATE = 'create',
-	/** 删除子瓦片 */
+	/** 删除子瓦片（合并） */
 	REMOVE = 'remove',
 }
 
 /**
- * 计算瓦片的地理边界
- * @param x - 瓦片 X 坐标
- * @param y - 瓦片 Y 坐标
- * @param z - 瓦片层级
- * @param projection - 投影对象
- * @returns 地理坐标边界 [minLon, minLat, maxLon, maxLat]
+ * 根据摄像机到瓦片的距离，评估瓦片是否需要细化或合并
+ * 与 three-tile 的 LODEvaluate 完全一致
+ * @param tile 瓦片实例
+ * @param minLevel 地图最小层级
+ * @param maxLevel 地图最大层级
+ * @param threshold 瓦片LOD阈值
+ * @returns LODAction 细化、合并或无动作
  */
-export function getTileBounds(
-	x: number,
-	y: number,
-	z: number,
-	projection: IProjection
-): [number, number, number, number] {
-	// 计算该层级的瓦片数量
-	const tilesAtLevel = Math.pow(2, z);
-
-	// 计算瓦片的大小（度）
-	const tileSize = 360 / tilesAtLevel;
-
-	// 计算瓦片的地理边界
-	const minLon = (x * tileSize) - 180;
-	const maxLon = minLon + tileSize;
-	const maxLat = 90 - (y * tileSize);
-	const minLat = maxLat - tileSize;
-
-	return [minLon, minLat, maxLon, maxLat];
-}
-
-/**
- * 计算瓦片的投影边界
- * @param x - 瓦片 X 坐标
- * @param y - 瓦片 Y 坐标
- * @param z - 瓦片层级
- * @param projection - 投影对象
- * @returns 投影坐标边界 [minX, minY, maxX, maxY]
- */
-export function getTileProjBounds(
-	x: number,
-	y: number,
-	z: number,
-	projection: IProjection
-): [number, number, number, number] {
-	const geoBounds = getTileBounds(x, y, z, projection);
-	return projection.getProjBoundsFromLonLat(geoBounds);
-}
-
-/**
- * 创建子瓦片（四叉树分裂）
- * @param parentX - 父瓦片 X 坐标
- * @param parentY - 父瓦片 Y 坐标
- * @param parentZ - 父瓦片层级
- * @returns 子瓦片坐标数组 [[x, y, z], ...]
- */
-export function createChildTiles(parentX: number, parentY: number, parentZ: number): Array<[number, number, number]> {
-	const childZ = parentZ + 1;
-	const childX = parentX * 2;
-	const childY = parentY * 2;
-
-	return [
-		[childX, childY, childZ],
-		[childX + 1, childY, childZ],
-		[childX, childY + 1, childZ],
-		[childX + 1, childY + 1, childZ],
-	];
-}
-
-/**
- * LOD 评估函数
- * 根据相机距离和瓦片大小判断是否需要创建或删除子瓦片
- * @param distRatio - 距离比例（相机距离/瓦片大小）
- * @param minLevel - 最小层级
- * @param maxLevel - 最大层级
- * @param currentLevel - 当前层级
- * @param inFrustum - 是否在视锥体内
- * @param LODThreshold - LOD 阈值
- * @returns LOD 动作
- */
-export function evaluateLOD(
-	distRatio: number,
+export function LODEvaluate(
+	tile: Tile,
 	minLevel: number,
 	maxLevel: number,
-	currentLevel: number,
-	inFrustum: boolean,
-	LODThreshold: number
+	threshold: number
 ): LODAction {
-	// 如果小于最小层级，不创建子瓦片
-	if (currentLevel < minLevel) {
-		return LODAction.NONE;
-	}
-
-	// 如果达到最大层级，不能再创建子瓦片
-	if (currentLevel >= maxLevel) {
+	// 非叶子且超过最大层级 → 删除子瓦片
+	if (!tile.isLeaf && tile.z > maxLevel) {
 		return LODAction.REMOVE;
 	}
 
-	// 根据距离比例判断
-	if (inFrustum) {
-		// 在视锥体内，使用较小阈值
-		if (distRatio < LODThreshold) {
-			return LODAction.CREATE;
-		} else if (distRatio > LODThreshold * 2) {
-			return LODAction.REMOVE;
-		}
-	} else {
-		// 不在视锥体内，使用较大阈值
-		if (distRatio > LODThreshold * 3) {
-			return LODAction.REMOVE;
-		}
+	const distRatio = tile.distRatio;
+
+	// 叶子瓦片、在视锥体内、距离比例小于阈值、且在显示或小于最小层级 → 创建子瓦片
+	// 与 three-tile LODEvaluate 完全一致
+	if (
+		tile.isLeaf &&
+		tile.inFrustum &&
+		tile.z < maxLevel &&
+		distRatio < threshold &&
+		(tile.showing || tile.z <= minLevel)
+	) {
+		return LODAction.CREATE;
+	}
+
+	// 非叶子、达到最小层级、距离比例大于阈值 → 删除子瓦片
+	if (
+		!tile.isLeaf &&
+		tile.z >= minLevel &&
+		distRatio > threshold
+	) {
+		return LODAction.REMOVE;
 	}
 
 	return LODAction.NONE;
 }
 
 /**
- * 计算瓦片在世界坐标系中的大小
- * @param x - 瓦片 X 坐标
- * @param y - 瓦片 Y 坐标
- * @param z - 瓦片层级
- * @param projection - 投影对象
- * @param tileScale - 瓦片缩放（地图的缩放）
- * @returns 瓦片世界大小（对角线长度）
+ * 创建单个瓦片实例并设置位置和缩放
+ * Babylon.js Y-up: 地图平铺在 X-Z 平面，Y 为海拔高度
+ * @param x 瓦片X坐标
+ * @param y 瓦片Y坐标
+ * @param z 瓦片层级
+ * @param px 位置X
+ * @param py 位置Z（Babylon Y-up中表示为Z轴位置）
+ * @param sx 缩放X
+ * @param sy 缩放Z（Babylon Y-up中表示为Z轴缩放）
+ * @param sz 缩放Y（Babylon Y-up中表示为Y轴缩放，通常为1）
+ * @returns 瓦片实例
  */
-export function getTileWorldSize(
+function createTile(
 	x: number,
 	y: number,
 	z: number,
-	projection: IProjection,
-	tileScale: { x: number; y: number }
-): number {
-	const bounds = getTileProjBounds(x, y, z, projection);
-	const width = (bounds[2] - bounds[0]) * tileScale.x;
-	const height = (bounds[3] - bounds[1]) * tileScale.y;
-	return Math.sqrt(width * width + height * height);
+	px: number,
+	py: number,
+	sx: number,
+	sy: number,
+	sz: number,
+	scene: Scene
+): Tile {
+	const tile = new Tile(x, y, z, scene);
+	// Babylon Y-up: 位置在 X-Z 平面上，Y=0
+	tile.position.set(px, 0, py);
+	// Babylon Y-up: 缩放 X 和 Z 控制水平大小，Y 控制厚度
+	tile.scaling.set(sx, sz, sy);
+	return tile;
+}
+
+/**
+ * 创建子瓦片（四叉树分裂）
+ * 与 three-tile 的 createChildren 完全一致，适配 Babylon Y-up 坐标系统
+ * @param parentTile 父瓦片
+ * @param loader 瓦片加载器
+ * @returns 子瓦片数组
+ */
+export function createChildren(parentTile: Tile, loader: ITileLoader): Tile[] {
+	const { x: parentX, y: parentY, z: parentZ } = parentTile;
+	const children: Tile[] = [];
+	const scene = parentTile.getScene();
+
+	const x = parentX * 2;
+	const z = parentZ + 1;
+	const p = 0.25;
+	const sx = 0.5;
+	const sz = 1.0;
+
+	if (parentZ === 0 && loader.projectionID === '4326') {
+		// EPSG:4326 瓦片0级只有2块子瓦片
+		const y = parentY;
+		const sy = 1.0;
+		const t1 = createTile(x, y, z, -p, 0, sx, sy, sz, scene);
+		const t2 = createTile(x + 1, y, z, p, 0, sx, sy, sz, scene);
+		children.push(t1, t2);
+	} else {
+		// 其它情况都为4块子瓦片
+		const y = parentY * 2;
+		const sy = 0.5;
+		const t1 = createTile(x, y, z, -p, p, sx, sy, sz, scene);
+		const t2 = createTile(x + 1, y, z, p, p, sx, sy, sz, scene);
+		const t3 = createTile(x, y + 1, z, -p, -p, sx, sy, sz, scene);
+		const t4 = createTile(x + 1, y + 1, z, p, -p, sx, sy, sz, scene);
+		children.push(t1, t2, t3, t4);
+	}
+
+	return children;
+}
+
+/**
+ * 计算瓦片的地理边界
+ * @param x 瓦片 X 坐标
+ * @param y 瓦片 Y 坐标
+ * @param z 瓦片层级
+ * @returns 地理坐标边界 [minLon, minLat, maxLon, maxLat]
+ */
+export function getTileLonLatBounds(
+	x: number,
+	y: number,
+	z: number
+): [number, number, number, number] {
+	const n = Math.pow(2, z);
+	const tileSizeLon = 360 / n;
+	const tileSizeLat = 180 / n;
+
+	const minLon = x * tileSizeLon - 180;
+	const maxLon = minLon + tileSizeLon;
+	const maxLat = 90 - y * tileSizeLat;
+	const minLat = maxLat - tileSizeLat;
+
+	return [minLon, minLat, maxLon, maxLat];
 }
 
 /**
  * 将地理坐标转换为瓦片坐标
- * @param lon - 经度
- * @param lat - 纬度
- * @param level - 瓦片层级
+ * @param lon 经度
+ * @param lat 纬度
+ * @param level 瓦片层级
  * @returns 瓦片坐标 [x, y, level]
  */
 export function geoToTile(lon: number, lat: number, level: number): [number, number, number] {
-	const tilesAtLevel = Math.pow(2, level);
+	const n = Math.pow(2, level);
+	let x = Math.floor(((lon + 180) / 360) * n);
+	let y = Math.floor(((90 - lat) / 180) * n);
 
-	let x = Math.floor(((lon + 180) / 360) * tilesAtLevel);
-	let y = Math.floor(((90 - lat) / 180) * tilesAtLevel);
-
-	// 确保在有效范围内
-	x = Math.max(0, Math.min(x, tilesAtLevel - 1));
-	y = Math.max(0, Math.min(y, tilesAtLevel - 1));
+	x = Math.max(0, Math.min(x, n - 1));
+	y = Math.max(0, Math.min(y, n - 1));
 
 	return [x, y, level];
 }
 
 /**
  * 将瓦片坐标转换为地理坐标（瓦片中心点）
- * @param x - 瓦片 X 坐标
- * @param y - 瓦片 Y 坐标
- * @param level - 瓦片层级
+ * @param x 瓦片 X 坐标
+ * @param y 瓦片 Y 坐标
+ * @param z 瓦片层级
  * @returns 地理坐标 [lon, lat]
  */
-export function tileToGeo(x: number, y: number, level: number): [number, number] {
-	const tilesAtLevel = Math.pow(2, level);
-	const tileSize = 360 / tilesAtLevel;
+export function tileToGeo(x: number, y: number, z: number): [number, number] {
+	const n = Math.pow(2, z);
+	const tileSize = 360 / n;
 
-	const lon = (x * tileSize) + tileSize / 2 - 180;
-	const lat = 90 - (y * tileSize) - tileSize / 2;
+	const lon = x * tileSize + tileSize / 2 - 180;
+	const lat = 90 - y * tileSize - tileSize / 2;
 
 	return [lon, lat];
-}
-
-/**
- * 计算两点之间的距离
- * @param lon1 - 点1经度
- * @param lat1 - 点1纬度
- * @param lon2 - 点2经度
- * @param lat2 - 点2纬度
- * @returns 距离（单位：米，近似值）
- */
-export function distanceBetweenGeo(lon1: number, lat1: number, lon2: number, lat2: number): number {
-	const R = 6371000; // 地球半径（米）
-	const dLat = ((lat2 - lat1) * Math.PI) / 180;
-	const dLon = ((lon2 - lon1) * Math.PI) / 180;
-
-	const a =
-		Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-		Math.cos((lat1 * Math.PI) / 180) *
-			Math.cos((lat2 * Math.PI) / 180) *
-			Math.sin(dLon / 2) *
-			Math.sin(dLon / 2);
-
-	const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-	return R * c;
-}
-
-/**
- * 克隆对象
- * @param obj - 要克隆的对象
- * @returns 克隆的对象
- */
-export function clone<T>(obj: T): T {
-	if (obj === null || typeof obj !== 'object') {
-		return obj;
-	}
-
-	if (obj instanceof Date) {
-		return new Date(obj.getTime()) as unknown as T;
-	}
-
-	if (obj instanceof Array) {
-		return obj.map(item => clone(item)) as unknown as T;
-	}
-
-	const clonedObj = {} as T;
-	for (const key in obj) {
-		if (Object.prototype.hasOwnProperty.call(obj, key)) {
-			clonedObj[key] = clone(obj[key]);
-		}
-	}
-
-	return clonedObj;
 }

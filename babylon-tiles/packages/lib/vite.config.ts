@@ -15,7 +15,10 @@ export default defineConfig({
 			formats: ['es', 'umd']
 		},
 		rollupOptions: {
-			external: ['@babylonjs/core', '@babylonjs/loaders'],
+			// 将所有 babylonjs 子路径导入也标记为 external，避免打包两份 Babylon.js
+			external: (id: string) => {
+				return id.startsWith('@babylonjs/core') || id.startsWith('@babylonjs/loaders');
+			},
 			output: {
 				globals: {
 					'@babylonjs/core': 'BABYLON',
