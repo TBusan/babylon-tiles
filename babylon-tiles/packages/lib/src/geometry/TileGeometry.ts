@@ -8,6 +8,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import type { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Martini } from './Martini.js';
 
 /**
  * 瓦片几何体选项
@@ -59,7 +60,6 @@ export class TileGeometry {
 
 		// 生成顶点
 		const positions: number[] = [];
-		const normals: number[] = [];
 		const uvs: number[] = [];
 		const indices: number[] = [];
 
@@ -89,9 +89,6 @@ export class TileGeometry {
 				// 添加位置
 				positions.push(posX, posY, posZ);
 
-				// 添加法向量（默认向上）
-				normals.push(0, 1, 0);
-
 				// 添加 UV 坐标
 				uvs.push(u, v);
 			}
@@ -112,15 +109,26 @@ export class TileGeometry {
 			}
 		}
 
+		// 计算法向量：有高程数据时使用 ComputeNormals 计算真实法线，
+		// 否则使用默认向上法线（平面瓦片）
+		const normals: number[] = [];
+		if (heights) {
+			VertexData.ComputeNormals(positions, indices, normals);
+		} else {
+			for (let i = 0; i < positions.length / 3; i++) {
+				normals.push(0, 1, 0);
+			}
+		}
+
 		// 设置顶点数据
 		vertexData.positions = positions;
 		vertexData.normals = normals;
 		vertexData.uvs = uvs;
 		vertexData.indices = indices;
 
-		// 如果有裙边，添加裙边几何体
+		// 如果有裙边，添加四方向裙边几何体
 		if (skirtHeight > 0) {
-			TileGeometry._addSkirt(vertexData, width, height, segmentsW, segmentsH, skirtHeight, positions);
+			TileGeometry._addSkirts(vertexData, segmentsW, segmentsH, skirtHeight);
 		}
 
 		// 创建网格
@@ -131,59 +139,85 @@ export class TileGeometry {
 	}
 
 	/**
-	 * 添加裙边（用于消除瓦片间的缝隙）
+	 * 添加四方向裙边（用于消除瓦片间的缝隙）
+	 * 从网格边缘顶点向下延伸 skirtHeight 高度，形成围挡几何体
 	 * @private
 	 */
-	private static _addSkirt(
+	private static _addSkirts(
 		vertexData: VertexData,
-		tileWidth: number,
-		tileHeight: number,
 		segmentsW: number,
 		segmentsH: number,
-		skirtHeight: number,
-		originalPositions: number[]
+		skirtHeight: number
 	): void {
-		const skirtPositions: number[] = [...originalPositions];
-		const skirtNormals: number[] = [];
-		const skirtUVs: number[] = [];
-		const skirtIndices: number[] = [];
+		const positions = vertexData.positions as number[];
+		const normals = vertexData.normals as number[];
+		const uvs = vertexData.uvs as number[];
+		const indices = vertexData.indices as number[];
 
-		const originalVertexCount = (segmentsW + 1) * (segmentsH + 1);
-		let skirtIndex = originalVertexCount;
+		const cols = segmentsW + 1;
+		const rows = segmentsH + 1;
+		let nextIndex = positions.length / 3;
 
-		// 下边裙边
-		for (let x = 0; x <= segmentsW; x++) {
-			const originalIdx = x * 3;
-			const pos = {
-				x: originalPositions[originalIdx],
-				y: originalPositions[originalIdx + 1],
-				z: originalPositions[originalIdx + 2],
-			};
+		// 辅助函数：添加一条边缘的裙边
+		const addEdge = (
+			edgeIndices: number[],
+			normalX: number,
+			normalZ: number
+		) => {
+			const baseIndex = nextIndex;
 
-			// 添加裙边顶点
-			skirtPositions.push(pos.x, pos.y - skirtHeight, pos.z);
-			skirtNormals.push(0, 0, -1);
-			skirtUVs.push(x / segmentsW, 0);
+			// 为边缘上的每个顶点创建对应的裙边顶点（向下延伸）
+			for (const idx of edgeIndices) {
+				const px = positions[idx * 3];
+				const py = positions[idx * 3 + 1];
+				const pz = positions[idx * 3 + 2];
 
-			// 添加索引（连接到原始边缘）
-			if (x < segmentsW) {
-				const idx1 = x;
-				const idx2 = x + 1;
-				const idx3 = skirtIndex;
-				const idx4 = skirtIndex + 1;
-
-				skirtIndices.push(idx1, idx2, idx3);
-				skirtIndices.push(idx2, idx4, idx3);
+				positions.push(px, py - skirtHeight, pz);
+				normals.push(normalX, 0, normalZ);
+				uvs.push(uvs[idx * 2], uvs[idx * 2 + 1]);
+				nextIndex++;
 			}
 
-			skirtIndex++;
-		}
+			// 生成裙边三角形（连接原始边缘和裙边边缘）
+			for (let i = 0; i < edgeIndices.length - 1; i++) {
+				const topA = edgeIndices[i];
+				const topB = edgeIndices[i + 1];
+				const botA = baseIndex + i;
+				const botB = baseIndex + i + 1;
 
-		// 更新顶点数据
-		vertexData.positions = skirtPositions;
-		vertexData.normals = [...vertexData.normals, ...skirtNormals];
-		vertexData.uvs = [...vertexData.uvs, ...skirtUVs];
-		vertexData.indices = [...vertexData.indices, ...skirtIndices];
+				// 两个三角形组成裙边四边形
+				indices.push(topA, botA, topB);
+				indices.push(topB, botA, botB);
+			}
+		};
+
+		// 下边（z 最小行，y=0）
+		const bottomEdge: number[] = [];
+		for (let x = 0; x < cols; x++) {
+			bottomEdge.push(x); // 第一行
+		}
+		addEdge(bottomEdge, 0, -1);
+
+		// 上边（z 最大行，y=segmentsH）
+		const topEdge: number[] = [];
+		for (let x = 0; x < cols; x++) {
+			topEdge.push((rows - 1) * cols + x); // 最后一行
+		}
+		addEdge(topEdge, 0, 1);
+
+		// 左边（x 最小列，x=0）
+		const leftEdge: number[] = [];
+		for (let y = 0; y < rows; y++) {
+			leftEdge.push(y * cols); // 每行第一个
+		}
+		addEdge(leftEdge, -1, 0);
+
+		// 右边（x 最大列，x=segmentsW）
+		const rightEdge: number[] = [];
+		for (let y = 0; y < rows; y++) {
+			rightEdge.push(y * cols + (cols - 1)); // 每行最后一个
+		}
+		addEdge(rightEdge, 1, 0);
 	}
 
 	/**
@@ -231,5 +265,136 @@ export class TileGeometry {
 			heights,
 			skirtHeight: 100, // 默认裙边高度
 		});
+	}
+
+	/**
+	 * 使用 Martini RTIN 算法创建自适应地形瓦片
+	 * 根据地形复杂度动态决定三角形数量：平坦区域三角形少，复杂区域三角形多
+	 *
+	 * @param name - 网格名称
+	 * @param scene - 场景
+	 * @param terrain - 高程数据（gridSize * gridSize，gridSize 必须为 2^n+1）
+	 * @param maxError - 最大允许误差（米），默认 0 表示完全精确
+	 *                   推荐值：低精度 50-100，中精度 10-30，高精度 1-5
+	 * @param skirtHeight - 裙边高度（局部坐标），默认 0
+	 * @param heightScale - 高程缩放因子（将米制高程转换为局部坐标），默认 1
+	 * @returns 瓦片网格
+	 */
+	public static createMartiniTile(
+		name: string,
+		scene: Scene,
+		terrain: Float32Array,
+		maxError: number = 0,
+		skirtHeight: number = 0,
+		heightScale: number = 1
+	): Mesh {
+		const gridSize = Math.floor(Math.sqrt(terrain.length));
+
+		// 创建 Martini 实例并生成自适应三角网
+		const martini = new Martini(gridSize);
+		const tile = martini.createTile(terrain);
+		const geoData = tile.getGeometryData(maxError);
+
+		// 应用高程缩放
+		const positions = geoData.positions;
+		for (let i = 0; i < geoData.vertexCount; i++) {
+			positions[i * 3 + 1] *= heightScale; // Y 轴（海拔）缩放
+		}
+
+		// 构建 VertexData
+		const vertexData = new VertexData();
+		vertexData.positions = Array.from(positions);
+		vertexData.uvs = Array.from(geoData.uvs);
+		vertexData.indices = Array.from(geoData.indices);
+
+		// 计算法向量
+		const normals: number[] = [];
+		VertexData.ComputeNormals(vertexData.positions, vertexData.indices, normals);
+		vertexData.normals = normals;
+
+		// 添加裙边（从边缘顶点向下延伸）
+		if (skirtHeight > 0) {
+			TileGeometry._addMartiniSkirts(vertexData, gridSize, skirtHeight);
+		}
+
+		// 创建网格
+		const mesh = new Mesh(name, scene);
+		vertexData.applyToMesh(mesh);
+
+		return mesh;
+	}
+
+	/**
+	 * 为 Martini 生成的不规则网格添加裙边
+	 * 通过检测边界顶点（x/z 在 ±0.5 边缘）来识别外边缘
+	 * @private
+	 */
+	private static _addMartiniSkirts(
+		vertexData: VertexData,
+		gridSize: number,
+		skirtHeight: number
+	): void {
+		const positions = vertexData.positions as number[];
+		const normals = vertexData.normals as number[];
+		const uvs = vertexData.uvs as number[];
+		const indices = vertexData.indices as number[];
+
+		const vertexCount = positions.length / 3;
+		const eps = 0.001; // 边界检测容差
+
+		// 收集四条边缘上的顶点索引
+		const bottomEdge: number[] = []; // z ≈ -0.5
+		const topEdge: number[] = [];    // z ≈ +0.5
+		const leftEdge: number[] = [];   // x ≈ -0.5
+		const rightEdge: number[] = [];  // x ≈ +0.5
+
+		for (let i = 0; i < vertexCount; i++) {
+			const x = positions[i * 3];
+			const z = positions[i * 3 + 2];
+
+			if (Math.abs(z - (-0.5)) < eps) bottomEdge.push(i);
+			if (Math.abs(z - 0.5) < eps) topEdge.push(i);
+			if (Math.abs(x - (-0.5)) < eps) leftEdge.push(i);
+			if (Math.abs(x - 0.5) < eps) rightEdge.push(i);
+		}
+
+		// 按边缘方向排序（确保裙边三角形连续）
+		bottomEdge.sort((a, b) => positions[a * 3] - positions[b * 3]);
+		topEdge.sort((a, b) => positions[a * 3] - positions[b * 3]);
+		leftEdge.sort((a, b) => positions[a * 3 + 2] - positions[b * 3 + 2]);
+		rightEdge.sort((a, b) => positions[a * 3 + 2] - positions[b * 3 + 2]);
+
+		let nextIndex = vertexCount;
+
+		const addEdge = (edgeIndices: number[], normalX: number, normalZ: number) => {
+			if (edgeIndices.length < 2) return;
+			const baseIndex = nextIndex;
+
+			for (const idx of edgeIndices) {
+				const px = positions[idx * 3];
+				const py = positions[idx * 3 + 1];
+				const pz = positions[idx * 3 + 2];
+
+				positions.push(px, py - skirtHeight, pz);
+				normals.push(normalX, 0, normalZ);
+				uvs.push(uvs[idx * 2], uvs[idx * 2 + 1]);
+				nextIndex++;
+			}
+
+			for (let i = 0; i < edgeIndices.length - 1; i++) {
+				const topA = edgeIndices[i];
+				const topB = edgeIndices[i + 1];
+				const botA = baseIndex + i;
+				const botB = baseIndex + i + 1;
+
+				indices.push(topA, botA, topB);
+				indices.push(topB, botA, botB);
+			}
+		};
+
+		addEdge(bottomEdge, 0, -1);
+		addEdge(topEdge, 0, 1);
+		addEdge(leftEdge, -1, 0);
+		addEdge(rightEdge, 1, 0);
 	}
 }

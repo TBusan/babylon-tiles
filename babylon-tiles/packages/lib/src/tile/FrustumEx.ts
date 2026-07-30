@@ -61,40 +61,43 @@ export class FrustumEx {
 
 	/**
 	 * 从视图-投影矩阵设置视锥体平面
-	 * @param m 组合的视图-投影矩阵（列主序）
+	 * @param m 组合的视图-投影矩阵
+	 *
+	 * Babylon.js Matrix.toArray() 返回行主序数组：m[row * 4 + col]
+	 * 行向量约定 v' = v * M，裁剪空间推导出的平面提取公式使用「行」：
+	 *   row0 = m[0..3], row1 = m[4..7], row2 = m[8..11], row3 = m[12..15]
+	 * 与 Three.js（列主序 / 列向量）的「列」提取公式完全不同。
 	 */
 	setFromProjectionMatrix(m: Matrix): this {
 		const { planes } = this;
-		const me = m.toArray(); // Babylon.js Matrix.toArray() returns column-major array
+		const me = m.toArray(); // Babylon.js 行主序: me[row*4+col]
 
-		// 从组合的视图-投影矩阵提取6个平面
 		// 平面方程: a*x + b*y + c*z + d = 0
 		// Plane(a, b, c, d) 其中 normal = (a, b, c)
 
-		// 左平面: row4 + row1
+		// 左平面: row3 + row0
 		planes[0] = new Plane(
-			me[3] + me[0], me[7] + me[4], me[11] + me[8], me[15] + me[12]
+			me[12] + me[0], me[13] + me[1], me[14] + me[2], me[15] + me[3]
 		);
-		// 右平面: row4 - row1
+		// 右平面: row3 - row0
 		planes[1] = new Plane(
-			me[3] - me[0], me[7] - me[4], me[11] - me[8], me[15] - me[12]
+			me[12] - me[0], me[13] - me[1], me[14] - me[2], me[15] - me[3]
 		);
-		// 下平面: row4 + row2
+		// 下平面: row3 + row1
 		planes[2] = new Plane(
-			me[3] + me[1], me[7] + me[5], me[11] + me[9], me[15] + me[13]
+			me[12] + me[4], me[13] + me[5], me[14] + me[6], me[15] + me[7]
 		);
-		// 上平面: row4 - row2
+		// 上平面: row3 - row1
 		planes[3] = new Plane(
-			me[3] - me[1], me[7] - me[5], me[11] - me[9], me[15] - me[13]
+			me[12] - me[4], me[13] - me[5], me[14] - me[6], me[15] - me[7]
 		);
-		// 近平面: row3 (D3D/Babylon.js [0,1] Z-range convention)
-		// OpenGL uses row4+row3, but Babylon uses [0,1] like D3D
+		// 近平面: row2 (D3D/Babylon.js [0,1] Z-range convention)
 		planes[4] = new Plane(
-			me[2], me[6], me[10], me[14]
+			me[8], me[9], me[10], me[11]
 		);
-		// 远平面: row4 - row3
+		// 远平面: row3 - row2
 		planes[5] = new Plane(
-			me[3] - me[2], me[7] - me[6], me[11] - me[10], me[15] - me[14]
+			me[12] - me[8], me[13] - me[9], me[14] - me[10], me[15] - me[11]
 		);
 
 		// 归一化所有平面

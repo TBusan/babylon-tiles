@@ -15,3 +15,5 @@ export * from './LoaderFactory.js';
 export * from './TileLoader.js';
 export * from './TileImageLoader.js';
 export * from './TerrainRGBLoader.js';
+export * from './LercTerrainLoader.js';
+export * from './WorkerPool.js';

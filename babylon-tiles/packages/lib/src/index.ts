@@ -14,9 +14,12 @@ export * from './source/index.js';
 
 // 导出几何体相关
 export * from './geometry/TileGeometry.js';
+export * from './geometry/Martini.js';
 
 // 导出材质相关
 export * from './material/TileMaterial.js';
+export * from './material/TileFilterMaterial.js';
+export * from './material/VectorTileRender.js';
 
 // 导出加载器相关
 export * from './loader/index.js';

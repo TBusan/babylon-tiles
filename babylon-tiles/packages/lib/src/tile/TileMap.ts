@@ -12,6 +12,7 @@ import { Vector3 as BabylonVector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
 import { Observable } from '@babylonjs/core/Misc/observable';
+import { Ray } from '@babylonjs/core/Culling/ray';
 
 import { Tile } from './Tile.js';
 import { TileLoader } from '../loader/TileLoader.js';
@@ -19,6 +20,7 @@ import type { ITileLoader } from '../loader/ITileLoader.js';
 import type { IProjection } from '../projection/IProjection.js';
 import { ProjectionFactory } from '../projection/ProjectionFactory.js';
 import type { ISource } from '../source/ISource.js';
+import { TerrainWorkerPool } from '../loader/WorkerPool.js';
 
 /**
  * 地面信息类型
@@ -52,8 +54,12 @@ export interface TileMapEventMap {
 	'tile-unload': { tile: Tile };
 	/** 瓦片可见状态改变事件 */
 	'tile-visible-changed': { tile: Tile; visible: boolean };
-	/** 加载完成事件 */
-	'loading-complete': {};
+	/** 加载开始事件（从空闲状态进入加载状态） */
+	'loading-start': {};
+	/** 加载进度事件 */
+	'loading-progress': { downloading: number; loaded: number };
+	/** 加载完成事件（所有待加载瓦片完成） */
+	'loading-complete': { loaded: number };
 }
 
 /** 地图投影中心经度类型 */
@@ -124,6 +130,10 @@ export class TileMap extends BabylonTransformNode {
 	private _observables: Map<keyof TileMapEventMap, Observable<any>> = new Map();
 
 	private _mask = -1;
+
+	/** 加载进度跟踪 */
+	private _wasLoading = false;
+	private _loadedCount = 0;
 
 	private _minLevel = 2;
 
@@ -362,6 +372,8 @@ export class TileMap extends BabylonTransformNode {
 			this.projection.mapHeight
 		);
 		this.rootTile.computeWorldMatrix(true);
+		// 投影切换后根瓦片缩放改变，失效缓存的尺寸/包围盒
+		this.rootTile.invalidateTileSize();
 	}
 
 	/**
@@ -414,9 +426,40 @@ export class TileMap extends BabylonTransformNode {
 				LODThreshold: this._LODThreshold,
 			});
 
+			// 加载进度事件跟踪
+			this._trackLoadingProgress();
+
 			this._notifyObservers('update', { delta: elapsed });
 			this._lastUpdateTime = currentTime;
 		}
+	}
+
+	/**
+	 * 跟踪加载进度并触发相应事件
+	 * 当 downloading 从 0 变为 >0 时触发 loading-start
+	 * 当 downloading 从 >0 变为 0 时触发 loading-complete
+	 */
+	private _trackLoadingProgress(): void {
+		const downloading = this.loader.downloadingThreads;
+		const isLoading = downloading > 0;
+
+		if (isLoading && !this._wasLoading) {
+			// 进入加载状态
+			this._notifyObservers('loading-start', {});
+		} else if (!isLoading && this._wasLoading) {
+			// 加载完成
+			this._notifyObservers('loading-complete', { loaded: this._loadedCount });
+			this._loadedCount = 0;
+		} else if (isLoading) {
+			// 加载进行中
+			this._loadedCount++;
+			this._notifyObservers('loading-progress', {
+				downloading,
+				loaded: this._loadedCount,
+			});
+		}
+
+		this._wasLoading = isLoading;
 	}
 
 	/**
@@ -437,12 +480,13 @@ export class TileMap extends BabylonTransformNode {
 
 	/**
 	 * 地理坐标转换为地图模型坐标
+	 * Babylon Y-up: 投影 X → 世界 X, 投影 Y(northing) → 世界 Z, 海拔 → 世界 Y
 	 * @param geo 地理坐标（经度、纬度、高度）
-	 * @returns 模型坐标
+	 * @returns 模型坐标 (x, altitude, z)
 	 */
 	public geo2map(geo: Vector3): Vector3 {
 		const pos = this.projection.project(geo.x, geo.y);
-		return new BabylonVector3(pos.x, pos.y, geo.z);
+		return new BabylonVector3(pos.x, geo.z, pos.y);
 	}
 
 	/**
@@ -457,12 +501,13 @@ export class TileMap extends BabylonTransformNode {
 
 	/**
 	 * 地图模型坐标转换为地理坐标
-	 * @param map 模型坐标
+	 * Babylon Y-up: 世界 X → 投影 X, 世界 Z → 投影 Y(northing), 世界 Y → 海拔
+	 * @param map 模型坐标 (x, altitude, z)
 	 * @returns 地理坐标（经度、纬度、高度）
 	 */
 	public map2geo(map: Vector3): Vector3 {
-		const position = this.projection.unProject(map.x, map.y);
-		return new BabylonVector3(position.lon, position.lat, map.z);
+		const position = this.projection.unProject(map.x, map.z);
+		return new BabylonVector3(position.lon, position.lat, map.y);
 	}
 
 	/**
@@ -570,10 +615,93 @@ export class TileMap extends BabylonTransformNode {
 	}
 
 	/**
-	 * 释放地图资源
+	 * 从屏幕坐标获取地面信息（射线检测）
+	 * 从相机发射射线穿过屏幕点，与地图瓦片网格求交
+	 * @param screenX 屏幕 X 坐标（像素）
+	 * @param screenY 屏幕 Y 坐标（像素）
+	 * @param camera 相机
+	 * @returns 地面信息（世界坐标、经纬度、法向量），未命中返回 undefined
+	 */
+	public getLocalInfoFromScreen(
+		screenX: number,
+		screenY: number,
+		camera: Camera
+	): LocationInfo | undefined {
+		const scene = this._mapScene;
+		// 使用 Babylon.js 内置 pick 进行射线检测
+		const pickResult = scene.pick(screenX, screenY, (mesh) => {
+			// 只检测地图瓦片网格（排除覆盖层和辅助对象）
+			return mesh.parent instanceof Tile;
+		}, true, camera);
+
+		if (!pickResult || !pickResult.hit || !pickResult.pickedPoint) {
+			return undefined;
+		}
+
+		return this._buildLocationInfo(pickResult.pickedPoint, pickResult.getNormal(true));
+	}
+
+	/**
+	 * 从世界坐标获取地面信息
+	 * 从世界坐标点向下发射射线，与地图瓦片求交
+	 * @param worldPoint 世界坐标点
+	 * @returns 地面信息，未命中返回 undefined
+	 */
+	public getLocalInfoFromWorld(worldPoint: Vector3): LocationInfo | undefined {
+		const scene = this._mapScene;
+		// 从世界坐标点向下发射射线
+		const origin = new BabylonVector3(worldPoint.x, worldPoint.y + 10000, worldPoint.z);
+		const direction = new BabylonVector3(0, -1, 0);
+		const ray = new Ray(origin, direction, 20000);
+
+		const pickResult = scene.pickWithRay(ray, (mesh) => {
+			return mesh.parent instanceof Tile;
+		}, true);
+
+		if (!pickResult || !pickResult.hit || !pickResult.pickedPoint) {
+			return undefined;
+		}
+
+		return this._buildLocationInfo(pickResult.pickedPoint, pickResult.getNormal(true));
+	}
+
+	/**
+	 * 构建地面信息对象
+	 */
+	private _buildLocationInfo(
+		point: BabylonVector3,
+		normal: BabylonVector3 | null
+	): LocationInfo {
+		const geo = this.world2geo(point);
+		return {
+			point: point.clone(),
+			location: geo,
+			normal: normal ? normal.clone() : new BabylonVector3(0, 1, 0),
+		};
+	}
+
+	/**
+	 * 释放地图资源（包括瓦片树、事件、加载器材质、Worker 池）
 	 */
 	public dispose(): void {
+		// 卸载瓦片树
 		this.rootTile.unload();
-		this.setParent(null);
+		this.rootTile.dispose();
+
+		// 清理所有 Observable
+		this._observables.forEach(observable => observable.clear());
+		this._observables.clear();
+
+		// 释放加载器中的共享材质
+		const loader = this.loader as TileLoader;
+		if (loader.backgroundMaterial) {
+			loader.backgroundMaterial.dispose();
+		}
+
+		// 释放全局 Worker 池
+		TerrainWorkerPool.dispose();
+
+		// 调用父类 dispose（释放 TransformNode）
+		super.dispose();
 	}
 }
