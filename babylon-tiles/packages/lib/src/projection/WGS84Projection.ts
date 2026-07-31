@@ -122,12 +122,14 @@ export class WGS84Projection implements IProjection {
 	 * 取得瓦片边界投影坐标范围
 	 */
 	public getProjBoundsFromXYZ(x: number, y: number, z: number): [number, number, number, number] {
-		const worldSize = Math.PI * 6378137;
-		const tileSize = (2 * worldSize) / Math.pow(2, z);
-		const minX = -worldSize + x * tileSize;
-		const minY = worldSize - (y + 1) * tileSize;
-		const maxX = -worldSize + (x + 1) * tileSize;
-		const maxY = worldSize - y * tileSize;
+		// 使用本投影自身的 mapWidth/mapHeight（线性投影），而非 Web Mercator 的 worldSize
+		const n = Math.pow(2, z);
+		const tileSizeX = this.mapWidth / n;
+		const tileSizeY = this.mapHeight / n;
+		const minX = -this.mapWidth / 2 + x * tileSizeX;
+		const maxX = minX + tileSizeX;
+		const minY = this.mapHeight / 2 - (y + 1) * tileSizeY;
+		const maxY = minY + tileSizeY;
 		return [minX, minY, maxX, maxY];
 	}
 

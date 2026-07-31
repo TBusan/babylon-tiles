@@ -27,6 +27,9 @@ export class TileLoader implements ITileLoader {
 	/** 当前实例的下载计数（非 static，避免多地图实例互相干扰） */
 	private _downloadingThreads = 0;
 
+	/** 等待下载槽位的队列（FIFO，由 _releaseSlot 唤醒） */
+	private _slotWaiters: Array<() => void> = [];
+
 	private _bounds: [number, number, number, number] = [-180, -85, 180, 85];
 
 	/** 场景 */
@@ -163,13 +166,10 @@ export class TileLoader implements ITileLoader {
 	} {
 		// 根据中央经线变换瓦片X坐标
 		const newX = this._projection.getTileXWithCenterLon(x, z);
-		// getProjBoundsFromXYZ 内部公式假设 y=0 为南行（TMS 约定），
-		// 而四叉树/标准 XYZ 的 y=0 为北行，需要翻转 Y 以获取正确的投影范围。
-		const flippedY = Math.pow(2, z) - 1 - y;
-		// 计算瓦片投影范围（使用翻转后的 Y）
-		const bounds = this._projection.getProjBoundsFromXYZ(x, flippedY, z);
-		// 计算瓦片经纬度范围（使用翻转后的 Y）
-		const lonLatBounds = this._projection.getLonLatBoundsFromXYZ(x, flippedY, z);
+		// getProjBoundsFromXYZ 内部公式已假定 y=0 为北行（与四叉树/标准 XYZ 一致），
+		// 直接使用原始 y（与 three-tile 参考实现一致，无需翻转）。
+		const bounds = this._projection.getProjBoundsFromXYZ(x, y, z);
+		const lonLatBounds = this._projection.getLonLatBoundsFromXYZ(x, y, z);
 
 		// URL 使用原始 y（四叉树 y 与标准 XYZ URL y 一致）
 		return { x: newX, y, z, bounds, lonLatBounds };
@@ -185,46 +185,57 @@ export class TileLoader implements ITileLoader {
 	 * @returns Promise<Mesh> 瓦片网格（可能包含覆盖层子节点）
 	 */
 	public async load(params: TileLoadParams | any): Promise<Mesh> {
-		// 提取瓦片坐标
-		const x = params.x;
-		const y = params.y;
-		const z = params.z;
+		// 同步预留下载槽位（在任何 await 之前），将并发限制在 maxThreads 以内。
+		// 之前的实现把 _downloadingThreads++ 放在 loadMaterial 的 await 之后，
+		// 导致一帧内所有无模型瓦片在同一同步遍历中通过 _needsLoad 门槛后，
+		// 计数器瞬间飙升至远超 maxThreads（峰值可达 28-40），
+		// 从而在队列排空之前阻塞所有后续下载。
+		await this._acquireSlot();
 
-		// 应用投影坐标变换
-		const coords = this.getTileCoords(x, y, z);
+		try {
+			// 提取瓦片坐标
+			const x = params.x;
+			const y = params.y;
+			const z = params.z;
 
-		// 加载几何体
-		const geometry = await this.loadGeometry(coords);
+			// 应用投影坐标变换
+			const coords = this.getTileCoords(x, y, z);
 
-		// 加载材质
-		const materials = await this.loadMaterial(coords);
+			// 加载几何体
+			const geometry = await this.loadGeometry(coords);
 
-		// materials[0] = backgroundMaterial, materials[1..N] = imageMaterials
-		if (materials.length <= 1) {
-			// 无影像源，使用背景材质
-			geometry.material = materials[0];
-		} else if (materials.length === 2) {
-			// 单个影像源，直接设置
-			geometry.material = materials[1];
-		} else {
-			// 多个影像源：第一个影像设为基底材质，其余创建覆盖层
-			geometry.material = materials[1];
+			// 加载材质并应用（基底 + 多影像源覆盖层）
+			const materials = await this.loadMaterial(coords);
+			this._applyMaterials(geometry, materials, x, y, z);
 
-			// 为每个额外影像层创建覆盖网格（child of 基底网格）
-			for (let i = 2; i < materials.length; i++) {
-				const overlay = TileGeometry.createFlatTile(
-					`tile-${z}-${x}-${y}-overlay-${i}`,
-					this._scene
-				);
-				overlay.material = materials[i];
-				// 微小 Y 偏移防止 z-fighting（局部空间，会被父瓦片缩放放大）
-				overlay.position.y = 0.0001 * i;
-				overlay.setParent(geometry);
-				overlay.computeWorldMatrix(true);
-			}
+			return geometry;
+		} finally {
+			this._releaseSlot();
 		}
+	}
 
-		return geometry;
+	/**
+	 * 等待可用的下载槽位（并发不超过 maxThreads）。
+	 * 槽位在 load() 入口同步预留下载；满时进入等待队列，由 _releaseSlot 唤醒。
+	 */
+	private _acquireSlot(): Promise<void> {
+		if (this._downloadingThreads < this.maxThreads) {
+			this._downloadingThreads++;
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve) => {
+			this._slotWaiters.push(resolve);
+		});
+	}
+
+	/** 释放下载槽位并唤醒下一个等待者 */
+	private _releaseSlot(): void {
+		this._downloadingThreads--;
+		const next = this._slotWaiters.shift();
+		if (next) {
+			this._downloadingThreads++;
+			next();
+		}
 	}
 
 	/**
@@ -248,6 +259,12 @@ export class TileLoader implements ITileLoader {
 		const coords = this.getTileCoords(x, y, z);
 
 		let resultMesh = mesh;
+		let materials: Material[] | undefined;
+
+		// 先加载新材质（若需要），确保后续更新失败时旧状态仍完整
+		if (updateMaterial) {
+			materials = await this.loadMaterial(coords);
+		}
 
 		if (updateGeometry) {
 			// 创建新网格替代旧网格，避免直接操作 _geometry 私有属性
@@ -257,52 +274,95 @@ export class TileLoader implements ITileLoader {
 			newMesh.scaling.copyFrom(mesh.scaling);
 			newMesh.computeWorldMatrix(true);
 
-			// 释放旧网格
-			if (mesh.material && mesh.material !== this.backgroundMaterial) {
+			// 释放旧网格：base 材质共享时保留，其余材质/纹理与 overlays 一并释放
+			const sharedBase =
+				mesh.material !== undefined &&
+				mesh.material !== null &&
+				mesh.material !== this.backgroundMaterial &&
+				this._isMaterialUsedElsewhere(mesh.material, mesh);
+			if (!sharedBase) {
+				if (mesh.material && mesh.material !== this.backgroundMaterial) {
+					const textures = mesh.material.getActiveTextures();
+					for (const tex of textures) {
+						tex.dispose();
+					}
+					mesh.material.dispose();
+				}
+			}
+			mesh.geometry?.dispose();
+			// 共享 base 材质时避免递归释放材质/纹理（否则会连带销毁共享材质）
+			mesh.dispose(false, !sharedBase);
+
+			resultMesh = newMesh;
+		} else if (updateMaterial) {
+			// 仅更新材质：释放旧 base 材质（共享材质保留）与旧 overlays 子网格
+			if (mesh.material && mesh.material !== this.backgroundMaterial && !this._isMaterialUsedElsewhere(mesh.material, mesh)) {
 				const textures = mesh.material.getActiveTextures();
 				for (const tex of textures) {
 					tex.dispose();
 				}
 				mesh.material.dispose();
 			}
-			mesh.geometry?.dispose();
-			mesh.dispose();
-
-			resultMesh = newMesh;
+			for (const child of [...mesh.getChildMeshes()]) {
+				child.dispose();
+			}
 		}
 
-		if (updateMaterial) {
-			await this.updateMaterialForMesh(resultMesh, coords);
+		if (materials) {
+			// 统一按 load() 语义重建材质层：基底用第一个影像，其余影像重建 overlays
+			this._applyMaterials(resultMesh, materials, x, y, z);
 		}
 
 		return resultMesh;
 	}
 
 	/**
-	 * 更新网格的材质
-	 * 注意：不能 dispose 共享的背景材质（backgroundMaterial）
+	 * 为网格应用材质：第一个影像设为基底材质，其余影像创建覆盖层（child of 基底网格）
+	 * materials[0] = backgroundMaterial, materials[1..N] = imageMaterials
+	 * @param mesh - 基底网格
+	 * @param materials - 材质数组
+	 * @param x - 瓦片 X 坐标（用于覆盖层命名）
+	 * @param y - 瓦片 Y 坐标
+	 * @param z - 瓦片层级
 	 */
-	private async updateMaterialForMesh(
+	private _applyMaterials(
 		mesh: Mesh,
-		coords: { x: number; y: number; z: number; bounds: [number, number, number, number]; lonLatBounds: [number, number, number, number] }
-	): Promise<void> {
-		const materials = await this.loadMaterial(coords);
-		// 使用最后一个材质（最顶层影像），与 load() 逻辑一致
-		const newMaterial = materials.length > 1 ? materials[materials.length - 1] : materials[0];
-		if (mesh.material) {
-			const oldMaterial = mesh.material;
-			mesh.material = newMaterial;
-			// 仅释放非共享材质（背景材质是全局共享的，不能 dispose）
-			if (oldMaterial !== this.backgroundMaterial) {
-				const textures = oldMaterial.getActiveTextures();
-				for (const tex of textures) {
-					tex.dispose();
-				}
-				oldMaterial.dispose();
-			}
-		} else {
-			mesh.material = newMaterial;
+		materials: Material[],
+		x: number,
+		y: number,
+		z: number
+	): void {
+		if (materials.length <= 1) {
+			// 无影像源，使用背景材质
+			mesh.material = materials[0];
+			return;
 		}
+
+		// 第一个影像设为基底材质
+		mesh.material = materials[1];
+
+		// 其余影像创建覆盖层（child of 基底网格）
+		for (let i = 2; i < materials.length; i++) {
+			const overlay = TileGeometry.createFlatTile(
+				`tile-${z}-${x}-${y}-overlay-${i}`,
+				this._scene
+			);
+			overlay.material = materials[i];
+			// 微小 Y 偏移防止 z-fighting（局部空间，会被父瓦片缩放放大）
+			overlay.position.y = 0.0001 * i;
+			overlay.setParent(mesh);
+			overlay.computeWorldMatrix(true);
+		}
+	}
+
+	/**
+	 * 检查材质是否被其他网格引用（用于避免 dispose 共享材质）
+	 * @param material - 待检查的材质
+	 * @param excludeMesh - 排除的网格（通常是正在更新的网格）
+	 * @returns 是否被其他网格引用
+	 */
+	private _isMaterialUsedElsewhere(material: Material, excludeMesh: Mesh): boolean {
+		return this._scene.meshes.some((m) => m !== excludeMesh && m.material === material);
 	}
 
 	/**
@@ -350,8 +410,6 @@ export class TileLoader implements ITileLoader {
 				coords.z <= this._demSource.maxLevel &&
 				this._intersectsBounds(this._demSource, coords.bounds)
 			) {
-				this._downloadingThreads++;
-
 				try {
 					const url = this._demSource.getUrl(coords.x, coords.y, coords.z);
 					if (url) {
@@ -362,16 +420,16 @@ export class TileLoader implements ITileLoader {
 							? await TerrainWorkerPool.parse(imgData)
 							: TerrainRGBParser.parse(imgData);
 						
-						// 高程归一化：将米制高程转换为地图局部坐标空间
-						const mapWidth = this._projection.mapWidth;
-						const heightScale = 1 / mapWidth;
-						const skirtHeight = 100 / mapWidth;
+						// DEM 高程为原始米制（与 three-tile 一致），直接使用，无需缩放
+						const heightScale = 1;
+						const skirtHeight = 100; // 米制裙边高度
 						
 						// 检查 DEM 数据是否为 2^n+1 尺寸（Martini 要求）
 						const gridSize = Math.floor(Math.sqrt(dem.length));
+						const isPerfectSquare = gridSize * gridSize === dem.length;
 						const isMartiniCompatible =
 							this.useMartini &&
-							gridSize * gridSize === dem.length &&
+							isPerfectSquare &&
 							((gridSize - 1) & (gridSize - 2)) === 0; // 2^n+1 检测
 						
 						if (isMartiniCompatible) {
@@ -386,13 +444,32 @@ export class TileLoader implements ITileLoader {
 							);
 						}
 						
-						// 回退：使用固定分段网格
-						const heights = new Float32Array(dem.length);
-						for (let i = 0; i < dem.length; i++) {
-							heights[i] = dem[i] * heightScale;
+						// 回退：DEM 非正方形时无法确定行距，降级为平瓦片（防御性兜底）
+						if (!isPerfectSquare) {
+							if (this.debug > 0) {
+								console.warn(`DEM data is not square (length=${dem.length}), fallback to flat tile.`);
+							}
+							return TileGeometry.createFlatTile(
+								`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
+								this._scene
+							);
 						}
-						
+
+						// 回退：使用固定分段网格
+						// DEM 为 gridSize×gridSize，第 0 行在北；几何网格 gy=0 在南 →
+						// 按 (segments+1)² 重采样并翻转行，与 createTile 的 heights 布局一致
 						const segments = this.terrainSegments;
+						const grid = segments + 1;
+						const heights = new Float32Array(grid * grid);
+						for (let gy = 0; gy < grid; gy++) {
+							for (let gx = 0; gx < grid; gx++) {
+								// 几何南边(gy=0) 对应 DEM 最后一行（北行翻转）
+								const demRow = Math.round(((segments - gy) * (gridSize - 1)) / segments);
+								const demCol = Math.round((gx * (gridSize - 1)) / segments);
+								heights[gy * grid + gx] = dem[demRow * gridSize + demCol] || 0;
+							}
+						}
+
 						return TileGeometry.createTile(
 							`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
 							{
@@ -410,8 +487,6 @@ export class TileLoader implements ITileLoader {
 					if (this.debug > 0) {
 						console.warn(`DEM load failed for tile ${coords.z}-${coords.x}-${coords.y}, fallback to flat:`, error);
 					}
-				} finally {
-					this._downloadingThreads--;
 				}
 			}
 
@@ -498,9 +573,7 @@ export class TileLoader implements ITileLoader {
 					continue;
 				}
 
-				this._downloadingThreads++;
-
-				// 阻塞等待纹理下载完成
+				// 阻塞等待纹理下载完成（下载槽位已在 load() 入口统一预留）
 				let texture = await this._loadTexture(url, coords);
 
 				// 如果需要裁剪（超级别回退或边界裁剪）
@@ -695,7 +768,7 @@ export class TileLoader implements ITileLoader {
 
 	/**
 	 * 加载纹理（Promise 包装，阻塞等待完成）
-	 * 使用 settled 标志确保 downloadingThreads 计数器仅递减一次
+	 * 使用 settled 标志确保只结算一次（超时/成功/失败仅其一）
 	 * @param url - 纹理 URL
 	 * @param coords - 瓦片坐标（用于调试）
 	 * @returns Promise<Texture>
@@ -711,7 +784,6 @@ export class TileLoader implements ITileLoader {
 				if (!settled) {
 					settled = true;
 					clearTimeout(timeout);
-					this._downloadingThreads--;
 					resolve(tex);
 				}
 			};

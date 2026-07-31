@@ -348,9 +348,10 @@ export class Tile extends BabylonTransformNode {
 		if (this.z === 0) {
 			cameraWorldPosition.copyFrom(camera.globalPosition);
 			// 计算视图-投影矩阵并设置视锥体
+			// Babylon.js 为行向量约定（p·M），合成矩阵顺序必须是 V·P（与 Scene.getTransformMatrix 一致）
 			const viewMatrix = camera.getViewMatrix();
 			const projMatrix = camera.getProjectionMatrix();
-			projMatrix.multiplyToRef(viewMatrix, tempMat);
+			viewMatrix.multiplyToRef(projMatrix, tempMat);
 			frustum.setFromProjectionMatrix(tempMat);
 		}
 

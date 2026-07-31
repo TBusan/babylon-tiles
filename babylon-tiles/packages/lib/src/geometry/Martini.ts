@@ -269,15 +269,16 @@ export class MartiniTile {
 		gridY: number,
 		tileSize: number
 	): void {
-		const pixelIdx = gridY * this.martini.gridSize + gridX;
+		// DEM 第 0 行在北，几何网格 gridY=0 在南（Z-）→ 行翻转读取（与 three-tile getAttributes 一致）
+		const pixelIdx = (tileSize - gridY) * this.martini.gridSize + gridX;
 
 		// 位置：归一化到 [-0.5, 0.5] 范围
 		positions[3 * index + 0] = gridX / tileSize - 0.5;        // X: 水平
 		positions[3 * index + 1] = this.terrain[pixelIdx];         // Y: 海拔（Babylon up-axis）
 		positions[3 * index + 2] = gridY / tileSize - 0.5;        // Z: 水平
 
-		// UV 坐标：[0, 1] 范围
+		// UV 坐标：[0, 1] 范围，v=0 在南（贴图北端贴北）
 		uvs[2 * index + 0] = gridX / tileSize;
-		uvs[2 * index + 1] = 1 - gridY / tileSize;  // 翻转 V 以匹配纹理方向
+		uvs[2 * index + 1] = gridY / tileSize;
 	}
 }

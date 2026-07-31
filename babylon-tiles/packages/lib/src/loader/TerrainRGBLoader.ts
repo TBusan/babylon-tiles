@@ -176,9 +176,9 @@ export class TerrainRGBLoader implements ITileGeometryLoader<VertexData> {
 		// 生成顶点
 		for (let i = 0; i <= segments; i++) {
 			for (let j = 0; j <= segments; j++) {
-				// 计算在 DEM 数组中的索引
+				// 计算在 DEM 数组中的索引（DEM 第 0 行在北，几何 i=0 在南 → 行翻转）
 				const demX = Math.floor((j / segments) * (size - 1));
-				const demY = Math.floor((i / segments) * (size - 1));
+				const demY = Math.floor(((segments - i) / segments) * (size - 1));
 				const demIndex = demY * size + demX;
 
 				// 归一化坐标（0-1）
@@ -186,9 +186,9 @@ export class TerrainRGBLoader implements ITileGeometryLoader<VertexData> {
 				const y = i / segments;
 				const z = dem[demIndex] || 0;
 
-				// Babylon.js Y-up 坐标系：X水平, Y海拔, Z水平
+				// Babylon.js Y-up 坐标系：X水平, Y海拔, Z水平（y=0 在南）
 				positions.push(x - 0.5, z, y - 0.5);
-				uvs.push(x, 1 - y); // 翻转 Y 轴以匹配纹理坐标
+				uvs.push(x, y); // v=0 在南（贴图北端贴北，与 invertY 默认 true 一致）
 				normals.push(0, 1, 0); // Y-up 法线
 			}
 		}

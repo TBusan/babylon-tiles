@@ -64,40 +64,42 @@ export class FrustumEx {
 	 * @param m 组合的视图-投影矩阵
 	 *
 	 * Babylon.js Matrix.toArray() 返回行主序数组：m[row * 4 + col]
-	 * 行向量约定 v' = v * M，裁剪空间推导出的平面提取公式使用「行」：
-	 *   row0 = m[0..3], row1 = m[4..7], row2 = m[8..11], row3 = m[12..15]
-	 * 与 Three.js（列主序 / 列向量）的「列」提取公式完全不同。
+	 * 行向量约定 v' = v * M，因此「裁剪坐标 w 分量所在的行」是第 4 行。
+	 * 平面提取使用「列」求和：col3 ± col_k（k = 0,1,2），与 Babylon.js
+	 * 官方 Frustum.GetPlanesToRef 完全一致（NDC z ∈ [-1,1]，isNDCHalfZRange=false）。
+	 * 注意不要使用 Three.js（列主序 / 列向量）的「行」提取公式。
 	 */
 	setFromProjectionMatrix(m: Matrix): this {
 		const { planes } = this;
 		const me = m.toArray(); // Babylon.js 行主序: me[row*4+col]
+		// 列向量: col_k = (me[k], me[4+k], me[8+k], me[12+k])，col3 即 w 列
 
 		// 平面方程: a*x + b*y + c*z + d = 0
 		// Plane(a, b, c, d) 其中 normal = (a, b, c)
 
-		// 左平面: row3 + row0
+		// 左平面: col3 + col0
 		planes[0] = new Plane(
-			me[12] + me[0], me[13] + me[1], me[14] + me[2], me[15] + me[3]
+			me[3] + me[0], me[7] + me[4], me[11] + me[8], me[15] + me[12]
 		);
-		// 右平面: row3 - row0
+		// 右平面: col3 - col0
 		planes[1] = new Plane(
-			me[12] - me[0], me[13] - me[1], me[14] - me[2], me[15] - me[3]
+			me[3] - me[0], me[7] - me[4], me[11] - me[8], me[15] - me[12]
 		);
-		// 下平面: row3 + row1
+		// 下平面: col3 + col1
 		planes[2] = new Plane(
-			me[12] + me[4], me[13] + me[5], me[14] + me[6], me[15] + me[7]
+			me[3] + me[1], me[7] + me[5], me[11] + me[9], me[15] + me[13]
 		);
-		// 上平面: row3 - row1
+		// 上平面: col3 - col1
 		planes[3] = new Plane(
-			me[12] - me[4], me[13] - me[5], me[14] - me[6], me[15] - me[7]
+			me[3] - me[1], me[7] - me[5], me[11] - me[9], me[15] - me[13]
 		);
-		// 近平面: row2 (D3D/Babylon.js [0,1] Z-range convention)
+		// 近平面: col3 + col2
 		planes[4] = new Plane(
-			me[8], me[9], me[10], me[11]
+			me[3] + me[2], me[7] + me[6], me[11] + me[10], me[15] + me[14]
 		);
-		// 远平面: row3 - row2
+		// 远平面: col3 - col2
 		planes[5] = new Plane(
-			me[12] - me[8], me[13] - me[9], me[14] - me[10], me[15] - me[11]
+			me[3] - me[2], me[7] - me[6], me[11] - me[10], me[15] - me[14]
 		);
 
 		// 归一化所有平面
