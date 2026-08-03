@@ -30,6 +30,12 @@ export interface TileGeometryOptions {
 	skirtHeight?: number;
 	/** 是否翻转 X 轴（默认为 false） */
 	flipX?: boolean;
+	/**
+	 * 边缘出血量（Mapbox tile overdraw）：四边各外扩比例，默认 0。
+	 * 平瓦片路径用于消除深缩放时相邻瓦片共享边的亚像素缝隙——
+	 * 位置外扩 + UV 外扩（名义边仍映射 0/1），外扩区靠 CLAMP 采样边缘纹素。
+	 */
+	bleed?: number;
 }
 
 /**
@@ -53,6 +59,7 @@ export class TileGeometry {
 			heights,
 			skirtHeight = 0,
 			flipX = false,
+			bleed = 0,
 		} = options;
 
 		// 创建顶点数据
@@ -86,11 +93,21 @@ export class TileGeometry {
 					posX = -posX;
 				}
 
-				// 添加位置
-				positions.push(posX, posY, posZ);
+				if (bleed > 0) {
+					// 边缘出血（Mapbox tile overdraw）：位置四边各外扩 bleed，
+					// UV 同步外扩到 [-bleed, 1+bleed]——名义边（±0.5）仍映射 0/1，
+					// 外扩区由纹理 CLAMP 采样边缘纹素，相邻瓦片重叠覆盖共享边，
+					// 消除深缩放时亚像素缝隙透出清屏色。
+					const S = 1 + 2 * bleed;
+					positions.push(posX * S, posY, posZ * S);
+					uvs.push(0.5 + (posX * S) / width, 0.5 + (posZ * S) / height);
+				} else {
+					// 添加位置
+					positions.push(posX, posY, posZ);
 
-				// 添加 UV 坐标
-				uvs.push(u, v);
+					// 添加 UV 坐标
+					uvs.push(u, v);
+				}
 			}
 		}
 
@@ -228,13 +245,14 @@ export class TileGeometry {
 	 * @param height - 高度
 	 * @returns 瓦片网格
 	 */
-	public static createFlatTile(name: string, scene: Scene, width = 1, height = 1): Mesh {
+	public static createFlatTile(name: string, scene: Scene, width = 1, height = 1, bleed = 0): Mesh {
 		return TileGeometry.createTile(name, {
 			scene,
 			width,
 			height,
 			segmentsW: 1,
 			segmentsH: 1,
+			bleed,
 		});
 	}
 

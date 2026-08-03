@@ -21,6 +21,13 @@ import { TerrainRGBParser } from './TerrainRGBLoader.js';
 import { TerrainWorkerPool } from './WorkerPool.js';
 
 /**
+ * 平瓦片边缘出血量（Mapbox tile overdraw）：四边各外扩 2 纹素（256px 瓦片）。
+ * 用于消除深缩放（z=17/18）时相邻瓦片共享边落在子像素位置、两侧 mesh 独立
+ * 光栅化导致的极细白色缝隙——外扩后相邻瓦片重叠，配合 CLAMP 采样同一边缘内容。
+ */
+const TILE_UV_BLEED = 2 / 256;
+
+/**
  * 瓦片加载器类
  * 负责加载瓦片的几何体和材质，包含投影坐标变换
  */
@@ -452,7 +459,10 @@ export class TileLoader implements ITileLoader {
 							}
 							return TileGeometry.createFlatTile(
 								`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
-								this._scene
+								this._scene,
+								1,
+								1,
+								TILE_UV_BLEED
 							);
 						}
 
@@ -491,16 +501,19 @@ export class TileLoader implements ITileLoader {
 				}
 			}
 
-			// 无 DEM 或 DEM 加载失败：创建平瓦片
+			// 无 DEM 或 DEM 加载失败：创建平瓦片（带边缘出血，消除深缩放共享边缝隙）
 			return TileGeometry.createFlatTile(
 				`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
-				this._scene
+				this._scene,
+				1,
+				1,
+				TILE_UV_BLEED
 			);
 		} catch (error) {
 			if (this.debug > 0) {
 				console.error('Load Geometry Error:', error);
 			}
-			return TileGeometry.createFlatTile('error-geometry', this._scene);
+			return TileGeometry.createFlatTile('error-geometry', this._scene, 1, 1, TILE_UV_BLEED);
 		}
 	}
 
