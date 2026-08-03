@@ -12,3 +12,4 @@ export * from './TileSource.js';
 export * from './XYZTileSource.js';
 export * from './ArcGisSource.js';
 export * from './MoreSources.js';
+export * from './CesiumTerrainSource.js';

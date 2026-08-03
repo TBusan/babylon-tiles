@@ -16,8 +16,11 @@ import type { ITileLoader, TileLoadParams } from './ITileLoader.js';
 import type { IProjection } from '../projection/IProjection.js';
 import type { ISource } from '../source/ISource.js';
 import { TileGeometry } from '../geometry/TileGeometry.js';
+import { resolveMartiniMaxError } from '../geometry/terrainError.js';
 import { TileMaterial } from '../material/TileMaterial.js';
 import { TerrainRGBParser } from './TerrainRGBLoader.js';
+import { LercTerrainLoader } from './LercTerrainLoader.js';
+import { QuantizedMeshLoader, type QuantizedMeshTileData } from './QuantizedMeshLoader.js';
 import { TerrainWorkerPool } from './WorkerPool.js';
 import { TextureCache } from './TextureCache.js';
 
@@ -420,7 +423,11 @@ export class TileLoader implements ITileLoader {
 	/** 地形瓦片分段数（默认 64，平衡精度与性能） */
 	public terrainSegments: number = 64;
 
-	/** Martini 最大误差阈值（米）—— 值越大三角形越少（性能高），值越小越精确 */
+	/**
+	 * Martini 参考误差（米）—— 值越大三角形越少（性能高），值越小越精确。
+	 * 语义：z=refZoom（默认 14）处的最大允许误差。低层级瓦片误差会随瓦片尺寸
+	 * 指数放宽（按 resolveMartiniMaxError 公式），近处保持此精度。
+	 */
 	public martiniMaxError: number = 10;
 
 	/** 是否使用 Martini 自适应三角网（默认 true，需要 DEM 数据为 2^n+1 尺寸） */
@@ -451,6 +458,13 @@ export class TileLoader implements ITileLoader {
 				this._intersectsBounds(this._demSource, coords.bounds)
 			) {
 				try {
+					// quantized-mesh（Cesium 地形）：服务网格与本地 3857 网格不同构，
+					// 由 source 定位覆盖本地瓦片的服务瓦片，再重采样本地规则网格。
+					// 不走下面的 demZ/k/shift 超采样（服务瓦片层级由 getTileCoordsForBounds 适配）。
+					if (this._demSource.dataType === 'quantized-mesh') {
+						return await this._loadQuantizedMeshGeometry(coords);
+					}
+
 					// DEM 超采样：z 超过 demSource.maxLevel 时，取父级 maxLevel 瓦片并裁剪
 					// 本瓦片的子区域，地形延续到更深层级，避免深缩放"突然变平"
 					const demZ = Math.min(coords.z, this._demSource.maxLevel);
@@ -460,6 +474,11 @@ export class TileLoader implements ITileLoader {
 					const demY = Math.floor(coords.y / shift);
 					const url = this._demSource.getUrl(demX, demY, demZ);
 					if (url) {
+						// LERC 二进制地形（ArcGIS / 天地图）：走独立解码管线，不经过图像解析
+						if (this._demSource.dataType === 'lerc') {
+							return await this._loadLercGeometry(coords, demX, demY, demZ, k, shift, url);
+						}
+
 						const imgData = await this._loadImageData(url);
 
 						// 使用 Worker 池或主线程解析地形数据
@@ -496,11 +515,20 @@ export class TileLoader implements ITileLoader {
 						
 						if (isMartiniCompatible) {
 							// 使用 Martini RTIN 自适应三角网
+							// maxError 按瓦片尺寸缩放：固定绝对米制误差会让低层级大瓦片
+							// 细化到满分辨率（单瓦片 6 万+ 顶点 → 帧率骤降）。用相对瓦片
+							// 尺寸的误差（cells 随 z 递减，远处放宽/近处收紧）控制顶点预算。
+							const maxError = resolveMartiniMaxError(
+								coords.z,
+								worldScale,
+								this.martiniMaxError,
+								{ gridSize }
+							);
 							return TileGeometry.createMartiniTile(
 								`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
 								this._scene,
 								dem,
-								this.martiniMaxError,
+								maxError,
 								skirtHeight,
 								heightScale,
 								worldScale
@@ -572,6 +600,201 @@ export class TileLoader implements ITileLoader {
 			}
 			return TileGeometry.createFlatTile('error-geometry', this._scene, 1, 1, TILE_UV_BLEED);
 		}
+	}
+
+	/**
+	 * 加载 LERC 地形几何体（ArcGIS / 天地图）
+	 * 二进制 buffer → lerc 解码 → 子区域裁剪（超采样）→ Martini 网格。
+	 * @param coords - 变换后的瓦片坐标
+	 * @param demX - DEM 瓦片 X（超采样时为父级瓦片）
+	 * @param demY - DEM 瓦片 Y
+	 * @param demZ - DEM 瓦片层级
+	 * @param k - 超采样级差（本瓦片 z 与 DEM z 的差值）
+	 * @param shift - 2^k，父瓦片每边本瓦片数
+	 * @param url - DEM 瓦片 URL
+	 * @returns Promise<Mesh> 地形网格
+	 */
+	private async _loadLercGeometry(
+		coords: {
+			x: number;
+			y: number;
+			z: number;
+			bounds: [number, number, number, number];
+			lonLatBounds: [number, number, number, number];
+		},
+		demX: number,
+		demY: number,
+		demZ: number,
+		k: number,
+		shift: number,
+		url: string
+	): Promise<Mesh> {
+		// 动态加载 lerc 解码器（失败抛错，由 loadGeometry 外层 catch 回退平瓦片）
+		await LercTerrainLoader.ensureDecoder();
+		const buffer = await LercTerrainLoader.fetchBuffer(url);
+
+		// 本瓦片在父瓦片内的象限 → 归一化裁剪范围 [minX, minY, maxX, maxY]
+		// （minY 为北，与 DEM 第 0 行在北一致；k=0 未超采样则全范围）
+		const subX = coords.x - demX * shift;
+		const subY = coords.y - demY * shift;
+		const clipBounds: [number, number, number, number] = k > 0
+			? [subX / shift, subY / shift, (subX + 1) / shift, (subY + 1) / shift]
+			: [0, 0, 1, 1];
+
+		// DEM 高程为原始米制（与 terrain-rgb 一致），无需缩放
+		const heightScale = 1;
+		const skirtHeight = 100; // 米制裙边高度
+
+		// 瓦片世界尺寸缩放系数 S = mapWidth / 2^z（米/瓦片单位），用于世界尺寸空间算法线
+		const worldScale = this._projection.mapWidth / Math.pow(2, coords.z);
+
+		return LercTerrainLoader.createTerrainMesh(
+			buffer,
+			coords.z,
+			clipBounds,
+			this._scene,
+			heightScale,
+			skirtHeight,
+			worldScale,
+			this.martiniMaxError
+		);
+	}
+
+	/**
+	 * 加载 quantized-mesh 地形几何体（Cesium 地形）
+	 * 服务瓦片 TIN 解码 → 本地瓦片 mercator 均匀规则网格重采样 → Martini 网格。
+	 *
+	 * 相邻本地瓦片共享边上的网格点（同经度 + 同 mercator 纬度线，因共享边
+	 * 物理位置重合）经同一服务瓦片插值 → 高程一致 → 无裂缝；UV 由 Martini
+	 * 按网格归一化生成（v=0 在南），与影像瓦片对齐。
+	 *
+	 * @param coords - 变换后的瓦片坐标
+	 * @returns Promise<Mesh> 地形网格
+	 */
+	private async _loadQuantizedMeshGeometry(coords: {
+		x: number;
+		y: number;
+		z: number;
+		bounds: [number, number, number, number];
+		lonLatBounds: [number, number, number, number];
+	}): Promise<Mesh> {
+		const source = this._demSource as ISource & {
+			getTileCoordsForBounds(
+				lonLatBounds: [number, number, number, number],
+				x: number,
+				y: number,
+				z: number
+			): {
+				x: number;
+				y: number;
+				z: number;
+				lonLatBounds: [number, number, number, number];
+			}[];
+			getRequestHeaders?: () => Record<string, string>;
+			littleEndian?: boolean;
+		};
+
+		// 1. 定位覆盖本地瓦片的所有服务瓦片（4326 等经纬度网格通常多块覆盖）
+		const coordsList = source.getTileCoordsForBounds(coords.lonLatBounds, coords.x, coords.y, coords.z);
+		if (!coordsList.length) {
+			throw new Error('No quantized-mesh tiles cover the local tile');
+		}
+
+		// 2. 请求并解码所有服务瓦片 TIN，合并为一个 TIN
+		// 请求头由 source 提供（外部配置的 Accept 协商头 + Cesium ion 认证头等）
+		const requestHeaders = source.getRequestHeaders?.();
+		const requestInit =
+			requestHeaders && Object.keys(requestHeaders).length ? { headers: requestHeaders } : undefined;
+		// 字节序由 source 显式指定（Mars3D 等服务为小端），不做自动检测
+		const littleEndian = source.littleEndian ?? false;
+
+		const lonArr: number[] = [];
+		const latArr: number[] = [];
+		const heightArr: number[] = [];
+		const triArr: number[] = [];
+		let lonMin = Infinity, lonMax = -Infinity, latMin = Infinity, latMax = -Infinity;
+
+		for (const c of coordsList) {
+			const response = await fetch(source.getUrl(c.x, c.y, c.z), requestInit);
+			if (!response.ok) {
+				// 单个服务瓦片失败不影响其余瓦片（仍可渲染局部）
+				if (this.debug > 0) {
+					console.warn(`quantized-mesh fetch failed: ${response.status} ${c.x}/${c.y}/${c.z}`);
+				}
+				continue;
+			}
+			const tin = QuantizedMeshLoader.decode(await response.arrayBuffer(), c.lonLatBounds, littleEndian);
+			// 合并顶点（相邻服务瓦片共享边顶点经纬度一致 → 插值无缝）
+			const vBase = lonArr.length;
+			for (let i = 0; i < tin.lon.length; i++) {
+				lonArr.push(tin.lon[i]);
+				latArr.push(tin.lat[i]);
+				heightArr.push(tin.height[i]);
+			}
+			for (let i = 0; i < tin.triangles.length; i++) {
+				triArr.push(tin.triangles[i] + vBase);
+			}
+			if (tin.lonMin < lonMin) lonMin = tin.lonMin;
+			if (tin.lonMax > lonMax) lonMax = tin.lonMax;
+			if (tin.latMin < latMin) latMin = tin.latMin;
+			if (tin.latMax > latMax) latMax = tin.latMax;
+		}
+		if (lonArr.length === 0) {
+			throw new Error('All quantized-mesh tiles failed to load');
+		}
+
+		const tin: QuantizedMeshTileData = {
+			lon: Float32Array.from(lonArr),
+			lat: Float32Array.from(latArr),
+			height: Float32Array.from(heightArr),
+			triangles: Uint32Array.from(triArr),
+			bounds: coords.lonLatBounds,
+			lonMin,
+			lonMax,
+			latMin,
+			latMax,
+		};
+
+		// 3. 本地瓦片 mercator 均匀规则网格（2^6+1=65，Martini 兼容）。
+		//    网格点经度在瓦片内线性（3857 经度投影线性），纬度方向在 mercator y 上
+		//    均匀；通过投影 unProject 从世界坐标反算经纬度，保证与服务 TIN 同一
+		//    经纬度参考。相邻瓦片共享边网格点物理重合 → 插值高程一致 → 无裂缝。
+		const gridSize = 65;
+		const dem = new Float32Array(gridSize * gridSize);
+		const buckets = QuantizedMeshLoader.buildBuckets(tin);
+
+		const [minX, minY, maxX, maxY] = coords.bounds;
+		const worldScale = this._projection.mapWidth / Math.pow(2, coords.z);
+		const centerX = (minX + maxX) * 0.5;
+		const centerZ = (minY + maxY) * 0.5;
+
+		for (let row = 0; row < gridSize; row++) {
+			// DEM 第 0 行在北（Martini 约定）：row=0 → localZ=+0.5（北），row=N-1 → 南
+			const localZ = 0.5 - row / (gridSize - 1);
+			const wy = centerZ + localZ * worldScale;
+			const rowBase = row * gridSize;
+			for (let col = 0; col < gridSize; col++) {
+				const localX = col / (gridSize - 1) - 0.5;
+				const wx = centerX + localX * worldScale;
+				const p = this._projection.unProject(wx, wy);
+				dem[rowBase + col] = QuantizedMeshLoader.interpolate(tin, p.lon, p.lat, buckets);
+			}
+		}
+
+		// 4. Martini 自适应三角网（法线/裙边/误差缩放与 terrain-rgb 统一）
+		const heightScale = 1;
+		const skirtHeight = 100; // 米制裙边高度
+		const maxError = resolveMartiniMaxError(coords.z, worldScale, this.martiniMaxError, { gridSize });
+
+		return TileGeometry.createMartiniTile(
+			`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
+			this._scene,
+			dem,
+			maxError,
+			skirtHeight,
+			heightScale,
+			worldScale
+		);
 	}
 
 	/**

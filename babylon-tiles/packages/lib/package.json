@@ -48,12 +48,13 @@
 	"homepage": "https://github.com/your-repo/babylon-tile#readme",
 	"dependencies": {
 		"@babylonjs/core": "^7.8.1",
-		"@babylonjs/loaders": "^7.8.1"
+		"@babylonjs/loaders": "^7.8.1",
+		"lerc": "^4.2.0"
 	},
 	"devDependencies": {
+		"@types/node": "^20.11.5",
 		"typescript": "^5.3.3",
 		"vite": "^5.0.12",
-		"vite-plugin-dts": "^3.7.3",
-		"@types/node": "^20.11.5"
+		"vite-plugin-dts": "^3.7.3"
 	}
 }

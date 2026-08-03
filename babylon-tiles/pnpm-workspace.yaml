@@ -1,2 +1,5 @@
 packages:
   - 'packages/*'
+# esbuild 需要 postinstall 下载平台二进制（vite 构建依赖），允许其执行
+allowBuilds:
+  esbuild: true

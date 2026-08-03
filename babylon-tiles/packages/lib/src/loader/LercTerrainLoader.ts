@@ -3,15 +3,20 @@
  * LERC = Limited Error Raster Compression
  * https://github.com/Esri/lerc
  *
- * 由于 LERC 解码器是外部依赖（lerc npm 包），
- * 本模块定义解码器接口并提供完整的加载管线：
- * 解码 → 子区域裁剪 → Martini 简化 → Babylon.js 网格
+ * 加载管线：解码（lerc npm 包）→ 子区域裁剪（超级别回退）→
+ * 2^n+1 上采样 → Martini 简化 → Babylon.js 网格。
+ *
+ * 解码器默认通过 ensureDecoder() 动态 import('lerc') 自动注入；
+ * 也支持手动注入：LercTerrainLoader.setDecoder((buf) => Lerc.decode(buf))。
  */
 
 import type { Scene } from '@babylonjs/core/scene';
 import { TileGeometry } from '../geometry/TileGeometry.js';
-import { Martini } from '../geometry/Martini.js';
+import { resolveMartiniMaxError } from '../geometry/terrainError.js';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
+// vite 构建时把 lerc 的 wasm 拷贝到产物目录并返回 URL；
+// 传给 load({ locateFile }) 避免 lerc 运行时自动探测 wasm 失败（dev/生产均可用）。
+import lercWasmUrl from 'lerc/lerc-wasm.wasm?url';
 
 /**
  * LERC 解码结果
@@ -47,23 +52,15 @@ interface DEMData {
 }
 
 /**
- * 各层级对应的 Martini 最大误差（米）
- * 层级越低（视野越大），允许误差越大以减少三角形数量
- */
-const MAX_ERRORS: Record<number, number> = {
-	0: 7000, 1: 6000, 2: 5000, 3: 4000, 4: 3000,
-	5: 2500, 6: 2000, 7: 1500, 8: 800, 9: 500,
-	10: 200, 11: 100, 12: 40, 13: 12, 14: 5,
-	15: 2, 16: 1, 17: 0.5, 18: 0.2, 19: 0.1, 20: 0.01,
-};
-
-/**
  * LERC 地形加载器
  * 支持 ArcGIS LERC 格式的高程数据加载和渲染
  */
 export class LercTerrainLoader {
-	/** 全局 LERC 解码器（需要用户注入） */
+	/** 全局 LERC 解码器（优先用动态 import('lerc') 注入） */
 	private static _decoder: LercDecoder | null = null;
+
+	/** ensureDecoder 的初始化 Promise（避免并发重复 import） */
+	private static _ensurePromise: Promise<boolean> | null = null;
 
 	/**
 	 * 设置 LERC 解码器
@@ -81,14 +78,46 @@ export class LercTerrainLoader {
 	}
 
 	/**
+	 * 确保解码器可用：动态 import('lerc') 并缓存到 _decoder。
+	 * lerc v4 是 WASM 模块，decode() 依赖 lercLib 初始化，必须先 await load()
+	 * 加载 wasm 后 decode 才可用（否则 lercLib.getBlobInfo 为 null 抛错）。
+	 * 已手动 setDecoder 时直接成功；import/load 失败返回 false（调用方回退平瓦片）。
+	 * @returns 解码器是否可用
+	 */
+	public static ensureDecoder(): Promise<boolean> {
+		if (LercTerrainLoader._decoder) {
+			return Promise.resolve(true);
+		}
+		if (!LercTerrainLoader._ensurePromise) {
+			LercTerrainLoader._ensurePromise = import('lerc')
+				.then(async (mod: any) => {
+					const Lerc = mod.default ?? mod;
+					// 初始化 wasm（lercLib 的 getBlobInfo/decode 依赖 wasm 就绪）。
+					// locateFile 指向构建产物中的 wasm（?url 导入），避免运行时探测失败。
+					if (typeof Lerc.load === 'function') {
+						await Lerc.load({ locateFile: () => lercWasmUrl });
+					}
+					LercTerrainLoader.setDecoder(
+						(buffer: ArrayBuffer) => Lerc.decode(buffer) as LercDecodeResult
+					);
+					return true;
+				})
+				.catch(() => false);
+		}
+		return LercTerrainLoader._ensurePromise;
+	}
+
+	/**
 	 * 从 ArrayBuffer 加载 LERC 地形并创建网格
 	 *
 	 * @param buffer LERC 编码的二进制数据
-	 * @param z 瓦片层级（用于确定 Martini 误差阈值）
-	 * @param clipBounds 裁剪范围 [minX, minY, maxX, maxY]（0-1 归一化）
+	 * @param z 瓦片层级（请求/显示层级，用于确定 Martini 误差阈值）
+	 * @param clipBounds 裁剪范围 [minX, minY, maxX, maxY]（0-1 归一化，minY 为北）
 	 * @param scene Babylon.js 场景
 	 * @param heightScale 高程缩放因子（米 → 局部坐标）
 	 * @param skirtHeight 裙边高度（局部坐标）
+	 * @param worldScale 瓦片世界宽度（米），用于在世界尺寸空间计算法线，默认 1
+	 * @param refError 参考误差（米，z=14 处），默认 10
 	 * @returns 地形网格
 	 */
 	public static createTerrainMesh(
@@ -97,11 +126,13 @@ export class LercTerrainLoader {
 		clipBounds: [number, number, number, number],
 		scene: Scene,
 		heightScale: number = 1,
-		skirtHeight: number = 0
+		skirtHeight: number = 0,
+		worldScale: number = 1,
+		refError: number = 10
 	): Mesh {
 		if (!LercTerrainLoader._decoder) {
 			throw new Error(
-				'LERC decoder not set. Call LercTerrainLoader.setDecoder() first. ' +
+				'LERC decoder not set. Call LercTerrainLoader.setDecoder() or ensureDecoder() first. ' +
 				'Example: LercTerrainLoader.setDecoder((buf) => Lerc.decode(buf))'
 			);
 		}
@@ -115,9 +146,14 @@ export class LercTerrainLoader {
 			demData = LercTerrainLoader._getSubDEM(demData, clipBounds);
 		}
 
-		// 3. 使用 Martini 生成自适应三角网
+		// 3. 确保 2^n+1 尺寸（Martini 要求）：512×512 → 513×513（复制南/东缘）。
+		//    超采样裁剪路径（k≥1）产出已是 2^n+1，此步幂等。
+		demData = LercTerrainLoader._ensureMartiniSize(demData);
+
+		// 4. 使用 Martini 生成自适应三角网
 		const { array: terrain, width: gridSize } = demData;
-		const maxError = MAX_ERRORS[z] ?? 0;
+		// 误差按瓦片尺寸缩放（与 terrain-rgb 统一），z 用显示层级
+		const maxError = resolveMartiniMaxError(z, worldScale, refError, { gridSize });
 
 		return TileGeometry.createMartiniTile(
 			`lerc-terrain-z${z}`,
@@ -125,7 +161,8 @@ export class LercTerrainLoader {
 			terrain,
 			maxError,
 			skirtHeight,
-			heightScale
+			heightScale,
+			worldScale
 		);
 	}
 
@@ -143,6 +180,47 @@ export class LercTerrainLoader {
 		}
 
 		return { array: demArray, width, height };
+	}
+
+	/**
+	 * 确保 DEM 为 2^n+1 正方形（Martini 兼容）。
+	 * 非 2^n+1 时上采样为 (p+1)×(p+1)，复制南缘/东缘行（与 TerrainRGBParser.parse
+	 * 一致）：每个瓦片包含与相邻瓦片共享的边缘采样点，边缘高度一致、无缝。
+	 * @param demData 原始 DEM 数据
+	 * @returns 2^n+1 尺寸的 DEM 数据
+	 */
+	private static _ensureMartiniSize(demData: DEMData): DEMData {
+		const { array, width, height } = demData;
+		if (width !== height) {
+			return demData; // 非正方形交由调用方兜底
+		}
+		const p = width;
+		// 已是 2^n+1（如 257/513）则原样返回
+		if (((p - 1) & (p - 2)) === 0) {
+			return demData;
+		}
+
+		// p×p → (p+1)×(p+1)
+		const out = new Float32Array((p + 1) * (p + 1));
+		for (let r = 0; r < p; r++) {
+			const src = r * p;
+			const dst = r * (p + 1);
+			for (let c = 0; c < p; c++) {
+				out[dst + c] = array[src + c];
+			}
+		}
+		// 南缘（复制最后一行）
+		for (let c = 0; c < p; c++) {
+			out[p * (p + 1) + c] = out[(p - 1) * (p + 1) + c];
+		}
+		// 东缘（复制最后一列）
+		for (let r = 0; r < p; r++) {
+			out[r * (p + 1) + p] = out[r * (p + 1) + (p - 1)];
+		}
+		// 东南角
+		out[p * (p + 1) + p] = out[(p - 1) * (p + 1) + (p - 1)];
+
+		return { array: out, width: p + 1, height: p + 1 };
 	}
 
 	/**
@@ -186,7 +264,7 @@ export class LercTerrainLoader {
 
 	/**
 	 * 裁剪并缩放高程数组
-	 * 先裁剪出子区域，再双线性缩放到目标尺寸
+	 * 先裁剪出子区域，再最近邻缩放到目标尺寸
 	 */
 	private static _clipAndResize(
 		buffer: Float32Array,
@@ -202,7 +280,7 @@ export class LercTerrainLoader {
 			}
 		}
 
-		// 缩放到目标尺寸
+		// 最近邻缩放到目标尺寸
 		const resized = new Float32Array(dh * dw);
 		for (let row = 0; row < dh; row++) {
 			for (let col = 0; col < dw; col++) {

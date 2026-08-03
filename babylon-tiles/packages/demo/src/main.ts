@@ -15,7 +15,7 @@ import { Effect } from '@babylonjs/core/Materials/effect';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import '@babylonjs/loaders/glTF';
 
-import { TileMap, GDSource, MapBoxTerrainSource } from '@babylon-tile/lib';
+import { TileMap, GDSource, CesiumTerrainSource } from '@babylon-tile/lib';
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
@@ -27,9 +27,10 @@ const REST_AZIMUTH_DIST = 8e6; // 超过此距离锁定方位角
 const MAX_DISTANCE = 3e7;
 const MIN_DISTANCE = 10;
 
-// ======================== 地形（Mapbox raster-dem） ========================
-// TODO: 填入 Mapbox 公开 token（https://account.mapbox.com/）后地形生效。
-// 空 token 时 DEM 请求失败会自动退化为平地，不影响影像底图。
+// ======================== 地形（默认 Cesium ion；Mapbox token 保留备用） ========================
+// 如需切回 Mapbox raster-dem，把 demSource 改为：
+//   new MapBoxTerrainSource({ token: MAPBOX_TOKEN })
+// 并在 import 中补回 MapBoxTerrainSource。此 token 为真实 token，刻意保留，不可回退。
 const MAPBOX_TOKEN = 'pk.eyJ1IjoidGJ1c2FuIiwiYSI6ImNtZjY2emZneDBkY24ybXB4cmpvdmwzNWYifQ.h6tcQ380WN5AW6fZr08how';
 
 const createScene = async (): Promise<Scene> => {
@@ -103,7 +104,22 @@ const createScene = async (): Promise<Scene> => {
 				maxLevel: 18,
 			}),
 		],
-		demSource: new MapBoxTerrainSource({ token: MAPBOX_TOKEN }),
+		demSource: new CesiumTerrainSource({
+			// Mars3D 免费 quantized-mesh 地形（国内可达，无需 token）。
+			// 走 vite proxy（/terrain → https://data1.mars3d.cn），由代理改写
+			// Referer/Origin 绕过防盗链（浏览器无法设置这两个 forbidden header）。
+			// Mars3D 瓦片为小端字节序 + 2×2 根瓦片网格，Accept 头按服务要求配置。
+			url: '/terrain/{z}/{x}/{y}.terrain',
+			tilingScheme: 'EPSG:4326',
+			tms: true,
+			numberOfLevelZeroTilesX: 2,
+			numberOfLevelZeroTilesY: 2,
+			littleEndian: true,
+			headers: {
+				Accept:
+					'application/vnd.quantized-mesh;extensions=octvertexnormals,application/octet-stream;q=0.9,*/*;q=0.01',
+			},
+		}),
 		minLevel: 2,
 		maxLevel: 18,
 		lon0: 90, // 中央经度 90°E（对齐 three-tile demo）

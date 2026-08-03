@@ -42,6 +42,9 @@ importers:
       '@babylonjs/loaders':
         specifier: ^7.8.1
         version: 7.54.3(@babylonjs/core@7.54.3)(babylonjs-gltf2interface@7.54.3)
+      lerc:
+        specifier: ^4.2.0
+        version: 4.2.0
     devDependencies:
       '@types/node':
         specifier: ^20.11.5
@@ -551,6 +554,9 @@ packages:
 
   kolorist@1.8.0:
     resolution: {integrity: sha512-Y+60/zizpJ3HRH8DCss+q95yr6145JXZo46OTpFvDZWLfRCE4qChOyk1b26nMaNpfHHgxagk9dXT5OP0Tfe+dQ==}
+
+  lerc@4.2.0:
+    resolution: {integrity: sha512-5TeQPWq2xnHjaxkTrskOG+Ove9pWRGFMKlofBx2hPORFHmIMhyoYWC5zMUJ9mibq0e5tqTZR/dvyAMZ3F6yCqw==}
 
   lodash.get@4.4.2:
     resolution: {integrity: sha512-z+Uw/vLuy6gQe8cfaFWD7p0wVv8fJl3mbzXh33RS+0oW2wvUqiRXiQ69gLWSLpgB5/6sU+r6BlQR0MBILadqTQ==}
@@ -1145,6 +1151,8 @@ snapshots:
       graceful-fs: 4.2.11
 
   kolorist@1.8.0: {}
+
+  lerc@4.2.0: {}
 
   lodash.get@4.4.2: {}
 
