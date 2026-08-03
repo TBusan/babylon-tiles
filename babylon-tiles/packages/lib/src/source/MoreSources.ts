@@ -353,13 +353,14 @@ export class BingSource extends TileSource {
 	private _tileToQuadKey(x: number, y: number, z: number): string {
 		let quadKey = '';
 		for (let i = z; i > 0; i--) {
-			const digit = 0;
+			let digit = 0;
 			const mask = 1 << (i - 1);
+			// Bing quadkey：从最高位开始，x 位贡献 1，y 位贡献 2
 			if ((x & mask) !== 0) {
-				// digit += 1;
+				digit += 1;
 			}
 			if ((y & mask) !== 0) {
-				// digit += 2;
+				digit += 2;
 			}
 			quadKey += digit.toString();
 		}
@@ -432,7 +433,9 @@ export class WmsSource extends TileSource {
 			width: '256',
 			height: '256',
 			bbox: bbox,
-			crs: this.projectionID === 'EPSG:3857' ? 'EPSG:3857' : 'EPSG:4326',
+			// projectionID 默认值为 '3857'（TileSource 基类），允许同时匹配
+			// 'EPSG:3857' 与 '3857' 两种写法（原实现只匹配带 EPSG 前缀的形式）
+			crs: /3857/.test(this.projectionID) ? 'EPSG:3857' : 'EPSG:4326',
 		});
 
 		return `${baseUrl}${separator}${params.toString()}`;

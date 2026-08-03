@@ -118,11 +118,15 @@ export class TileSource implements ISource {
 	 */
 	public getUrl(x: number, y: number, z: number, obj?: { [name: string]: unknown }): string {
 		// 随机选择子域名
-		const subLen = Array.isArray(this.subdomains) ? this.subdomains.length : 0;
+		// subdomains 支持数组（['a','b','c']）或字符串（'abc'，OSM/天地图/高德等
+		// 常用字符串形式）。原实现只处理数组，字符串形式的长度被当作 0，
+		// 导致模板变量 {s} 为 undefined，strTemplate 直接抛异常。
+		const isArray = Array.isArray(this.subdomains);
+		const subLen = isArray ? this.subdomains.length : (typeof this.subdomains === 'string' ? this.subdomains.length : 0);
 		let s: string | undefined;
 		if (subLen > 0) {
 			const index = Math.floor(Math.random() * subLen);
-			s = this.subdomains[index];
+			s = isArray ? this.subdomains[index] : (this.subdomains as string).charAt(index);
 		}
 
 		// 如果是 TMS 坐标系，反转 Y 坐标

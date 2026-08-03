@@ -15,7 +15,7 @@ import { Effect } from '@babylonjs/core/Materials/effect';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import '@babylonjs/loaders/glTF';
 
-import { TileMap, ArcGisSource } from '@babylon-tile/lib';
+import { TileMap, GDSource } from '@babylon-tile/lib';
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
@@ -83,8 +83,10 @@ const createScene = async (): Promise<Scene> => {
 	const map = TileMap.create({
 		scene,
 		imgSource: [
-			new ArcGisSource({
-				style: 'World_Imagery',
+			// 原 ArcGisSource(World_Imagery) 在国内网络不可达（连接超时），
+			// 瓦片永远加载不完导致地图停滞。改用无需 token 的高德影像源。
+			new GDSource({
+				style: 'img',
 				minLevel: 2,
 				maxLevel: 18,
 			}),

@@ -426,6 +426,11 @@ export class TileMap extends BabylonTransformNode {
 				LODThreshold: this._LODThreshold,
 			});
 
+			// 每 tick 结束后从根全树重算可见性（替代原 update() 内逐瓦片的
+			// wasInFrustum → _checkVisible）。此时所有瓦片的 _inFrustum 与 _model
+			// 都已更新完毕，一次递归即可保证「同一位置只被一层瓦片覆盖」。
+			this.rootTile.updateVisibility();
+
 			// 加载进度事件跟踪
 			this._trackLoadingProgress();
 

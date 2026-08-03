@@ -45,7 +45,13 @@ export class TerrainRGBParser {
 	 */
 	private static _getZ(imgData: Uint8ClampedArray, i: number): number {
 		const index = i * 4;
-		const [r, g, b, a] = imgData.slice(index, index + 4);
+		// 直接按索引读取，避免 imgData.slice() 为每个像素分配一个 4 元素数组。
+		// 一张 256×256 瓦片有 65536 个像素，原实现每像素一次 slice 分配 +
+		// 解构，是主线程解析地形的主耗时点。
+		const r = imgData[index];
+		const g = imgData[index + 1];
+		const b = imgData[index + 2];
+		const a = imgData[index + 3];
 
 		// 透明像素直接返回高度 0
 		if (a === 0) {
@@ -54,8 +60,7 @@ export class TerrainRGBParser {
 
 		// RGB to height 公式（Mapbox Terrain-RGB）
 		// height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-		const h = -10000 + (((r << 16) | (g << 8) | b) * 0.1);
-		return h;
+		return -10000 + (((r << 16) | (g << 8) | b) * 0.1);
 	}
 }
 
@@ -261,9 +266,11 @@ export class TerrainRGBLoaderWithWorker implements ITileGeometryLoader<VertexDat
 
 				for (let i = 0; i < pixelCount; i++) {
 					const index = i * 4;
-					const [r, g, b, a] = [imgData[index], imgData[index + 1], imgData[index + 2], imgData[index + 3]];
+					const r = imgData[index];
+					const g = imgData[index + 1];
+					const b = imgData[index + 2];
 
-					if (a === 0) {
+					if (imgData[index + 3] === 0) {
 						dem[i] = 0;
 					} else {
 						dem[i] = -10000 + (((r << 16) | (g << 8) | b) * 0.1);

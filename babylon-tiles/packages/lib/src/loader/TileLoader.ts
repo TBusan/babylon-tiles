@@ -576,6 +576,11 @@ export class TileLoader implements ITileLoader {
 				// 阻塞等待纹理下载完成（下载槽位已在 load() 入口统一预留）
 				let texture = await this._loadTexture(url, coords);
 
+				// 加载失败/超时（返回 undefined）：跳过该影像源，回退背景材质
+				if (!texture) {
+					continue;
+				}
+
 				// 如果需要裁剪（超级别回退或边界裁剪）
 				const needsClip = clipBounds[0] !== 0 || clipBounds[1] !== 0 ||
 					clipBounds[2] !== 1 || clipBounds[3] !== 1;
@@ -755,13 +760,29 @@ export class TileLoader implements ITileLoader {
 
 	/**
 	 * 加载图像元素（用于 Canvas 裁剪操作）
+	 * 带安全超时：网络不可达/挂起时若无限等待，load() 的下载槽位会永久泄漏，
+	 * 最终 10 个槽位全部被卡死，整个地图停止加载（表现为瓦片永远加载不完）。
 	 */
 	private _loadImageElement(url: string): Promise<HTMLImageElement> {
 		return new Promise((resolve, reject) => {
 			const img = new Image();
 			img.crossOrigin = 'anonymous';
-			img.onload = () => resolve(img);
-			img.onerror = () => reject(new Error(`Failed to load image: ${url}`));
+			let settled = false;
+			const settle = (fn: () => void) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timeout);
+					fn();
+				}
+			};
+			const timeout = setTimeout(() => {
+				if (this.debug > 0) {
+					console.warn(`Image load timeout for ${url}`);
+				}
+				settle(() => reject(new Error(`Image load timeout: ${url}`)));
+			}, 15000);
+			img.onload = () => settle(() => resolve(img));
+			img.onerror = () => settle(() => reject(new Error(`Failed to load image: ${url}`)));
 			img.src = url;
 		});
 	}
@@ -769,23 +790,37 @@ export class TileLoader implements ITileLoader {
 	/**
 	 * 加载纹理（Promise 包装，阻塞等待完成）
 	 * 使用 settled 标志确保只结算一次（超时/成功/失败仅其一）
+	 * 失败/超时时 resolve(undefined)：让该影像源被跳过，瓦片回退到背景材质，
+	 * 而不是用一张黑图并把瓦片标记为「已加载」（黑图会被 updateVisibility 当成
+	 * 子瓦片已加载，父瓦片因此不会填充间隙，留下空洞）。
 	 * @param url - 纹理 URL
 	 * @param coords - 瓦片坐标（用于调试）
-	 * @returns Promise<Texture>
+	 * @returns Promise<Texture | undefined>
 	 */
 	private _loadTexture(
 		url: string,
 		coords: { x: number; y: number; z: number }
-	): Promise<Texture> {
-		return new Promise<Texture>((resolve) => {
+	): Promise<Texture | undefined> {
+		return new Promise<Texture | undefined>((resolve) => {
 			let settled = false;
+			let texture: Texture | undefined;
 
-			const settle = (tex: Texture) => {
-				if (!settled) {
-					settled = true;
-					clearTimeout(timeout);
-					resolve(tex);
+			const fail = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				// 释放半成品纹理（new Texture 已加入 scene.textures，不释放会泄漏）
+				if (texture) {
+					texture.dispose();
 				}
+				resolve(undefined);
+			};
+
+			const succeed = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				resolve(texture);
 			};
 
 			// 安全超时：防止纹理加载永不完成导致 _isLoading 卡死
@@ -793,10 +828,9 @@ export class TileLoader implements ITileLoader {
 				if (this.debug > 0) {
 					console.warn(`Texture load timeout for tile ${coords.z}-${coords.x}-${coords.y}`);
 				}
-				settle(texture);
+				fail();
 			}, 15000);
 
-			let texture: Texture;
 			try {
 				texture = new Texture(
 					url,
@@ -804,17 +838,17 @@ export class TileLoader implements ITileLoader {
 					undefined,  // noMipmap
 					undefined,  // invertY
 					undefined,  // samplingMode
-					() => settle(texture),
+					succeed,
 					(_message?: string, _exception?: any) => {
 						if (this.debug > 0) {
 							console.error(`Texture load error for tile ${coords.z}-${coords.x}-${coords.y}:`, _message);
 						}
-						settle(texture);
+						fail();
 					}
 				);
 			} catch (e) {
 				// Texture 构造函数抛出异常时仍然需要结算计数器
-				settle(texture!);
+				fail();
 			}
 		});
 	}

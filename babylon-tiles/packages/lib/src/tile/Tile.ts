@@ -76,6 +76,12 @@ export class Tile extends BabylonTransformNode {
 	/** 瓦片是否正在加载中 */
 	private _isLoading = false;
 
+	/** 加载失败计数（用于指数退避，防止预加载对失败瓦片每 tick 无限重试） */
+	private _loadFailCount = 0;
+
+	/** 下次允许重试加载的时间戳（指数退避） */
+	private _nextLoadRetryAt = 0;
+
 	/** 根瓦片 */
 	private _root: Tile = this;
 
@@ -159,9 +165,15 @@ export class Tile extends BabylonTransformNode {
 		// 所有瓦片会塌缩到原点附近并互相重叠（同时整屏过度绘制导致帧率崩到 1）。
 		localMatrix.multiplyToRef(parentWorld, this._worldMatrix);
 
-		// 递归使子节点失效
-		for (const child of this.getChildTransformNodes()) {
-			(child as Tile)._currentRenderId = -1;
+		// 递归使子节点失效：直接遍历子瓦片 + 模型，避免 getChildTransformNodes()
+		// 每帧为每个瓦片分配新数组（高缩放级别下成千上万个瓦片时这是大量 GC 压力）。
+		if (this._subTiles) {
+			for (const child of this._subTiles) {
+				child._currentRenderId = -1;
+			}
+		}
+		if (this._model) {
+			this._model._currentRenderId = -1;
 		}
 
 		return this._worldMatrix;
@@ -312,8 +324,16 @@ export class Tile extends BabylonTransformNode {
 			return false;
 		}
 
-		// 没有模型：始终加载（与 three-tile 一致，不检查视锥体）
-		// three-tile 对无模型瓦片不做 inFrustum 检查，确保瓦片树能正常向下扩展
+		// 加载失败退避：失败过的瓦片按指数退避重试（上限 30s），避免
+		// 预加载对永久失败的瓦片每 100ms tick 无限重试（占下载槽 + 刷错误日志）。
+		if (this._loadFailCount > 0 && Date.now() < this._nextLoadRetryAt) {
+			return false;
+		}
+
+		// 没有模型：恢复预加载（与 three-tile 一致）。瓦片树只会在「视锥体内
+		// 且正在显示」的父瓦片下创建子瓦片（见 LODEvaluate CREATE），所以已创建
+		// 的瓦片都靠近相机，预加载量有界（实测高缩放 ~300 个）。渲染数量不受
+		// 影响——可见性由 updateVisibility 控制，只启用视锥体内的瓦片。
 		if (!this._model) {
 			return true;
 		}
@@ -362,6 +382,9 @@ export class Tile extends BabylonTransformNode {
 		const bbox = this.getBBox();
 		this._inFrustum = frustum.intersectsBox(bbox);
 
+		// 可见性不再在此处逐瓦片刷新：改由 TileMap.update 每 tick 结束后从根
+		// 全树调用 updateVisibility()（此时所有 _inFrustum 与 _model 已更新完毕）。
+
 		// 下载瓦片数据
 		if (this.z >= minLevel && this._needsLoad(loader, minLevel)) {
 			if (this._model) {
@@ -390,6 +413,10 @@ export class Tile extends BabylonTransformNode {
 		if (action === LODAction.CREATE) {
 			const newTiles = createChildren(this, loader);
 			newTiles.forEach(child => {
+				// 立即绑定根瓦片：新建子瓦片在首帧 update 前若加载完成，需要
+				// 正确的 _root 才能执行全树 updateVisibility（否则 _root 指向自己，
+				// 可见性只更新局部子树，延迟 100ms 才恢复）。
+				child._root = this._root;
 				// 保存子瓦片的局部坐标（父瓦片局部空间中的值）
 				// Babylon.js setParent 默认保持世界空间不变，这会导致局部值
 				// 被父瓦片的大缩放值除以后变得极小。
@@ -415,28 +442,48 @@ export class Tile extends BabylonTransformNode {
 	}
 
 	/**
-	 * 瓦片下载完成后，检查4个兄弟瓦片全部下载完成时再显示
+	 * 递归更新本瓦片及后代的可见性（从根调用，每 tick 及瓦片加载完成后）。
+	 * 核心不变量：任意时刻，一个点最多被一层瓦片网格覆盖——
+	 * 父瓦片显示时其整个子树的网格全部隐藏（消除跨级 z-fight）。
+	 *
+	 * suppressed：被某个显示中的父瓦片覆盖（其子树必须隐藏）。
+	 * 规则：
+	 *  - 无模型：自身不可见，子瓦片继承 suppressed（无模型父不提供遮挡，不压制子瓦片）；
+	 *  - 有模型且为叶子：suppressed 为 false 且在视锥体内才显示；
+	 *  - 有模型且有子瓦片：suppressed 为 false 且在视锥体内、且存在「视锥体内未加载」的
+	 *    子瓦片（或无任何视锥体内子瓦片，避免边界空洞）时显示，用于填充加载间隙；
+	 *    显示时递归压制后代。
 	 */
-	private _checkVisible(): this {
+	public updateVisibility(suppressed = false): void {
 		// 调试模式：强制所有瓦片可见
 		if (Tile.forceVisible) {
 			this.showing = true;
-			return this;
+			this._subTiles?.forEach(c => c.updateVisibility(false));
+			return;
 		}
-		const parent = this.parent;
-		if (parent instanceof Tile) {
-			if (parent._model) {
-				const subTiles = parent._subTiles;
-				if (subTiles) {
-					const allLoaded = !subTiles.some(tile => !tile._model);
-					subTiles.forEach(child => (child.showing = allLoaded));
-					parent.showing = !allLoaded;
-				}
-			} else {
-				this.showing = true;
-			}
+
+		const subTiles = this._subTiles;
+
+		// 无模型：自身不可见，子瓦片继承 suppressed（minLevel 兼容：z<minLevel 的
+		// 瓦片永远不加载，它们的子瓦片（实际显示的瓦片）不应被压制）。
+		if (!this._model) {
+			subTiles?.forEach(c => c.updateVisibility(suppressed));
+			return;
 		}
-		return this;
+
+		// 有模型且为叶子：suppressed 为 false 且在视锥体内才显示
+		if (!subTiles || subTiles.length === 0) {
+			this.showing = !suppressed && this.inFrustum;
+			return;
+		}
+
+		// 有模型且有子瓦片：视锥体内的子瓦片全部加载完 → 切换到子瓦片显示；
+		// 否则本瓦片显示（填充加载间隙 / 边界空洞），并递归压制后代。
+		const inFrustumTiles = subTiles.filter(c => c.inFrustum);
+		const allLoaded = inFrustumTiles.length > 0 && inFrustumTiles.every(c => !!c._model);
+		const shouldShow = !suppressed && this.inFrustum && !allLoaded;
+		this.showing = shouldShow;
+		subTiles.forEach(c => c.updateVisibility(suppressed || shouldShow));
 	}
 
 	/**
@@ -480,11 +527,20 @@ export class Tile extends BabylonTransformNode {
 			// three-tile: this._checkPoint.y = this._model.geometry.boundingBox?.max.z || 0
 			this._checkPoint.y = model.getBoundingInfo()?.boundingBox?.maximumWorld?.y || 0;
 
-			this.isLeaf && this._checkVisible();
+			// 加载成功，重置失败退避
+			this._loadFailCount = 0;
+			this._nextLoadRetryAt = 0;
+
+			// 全树重算可见性：新模型可能让父瓦片从「填充间隙」切换为隐藏、
+			// 本瓦片从隐藏切换为显示（保证同一位置只被一层瓦片覆盖）
+			this._root.updateVisibility();
 
 			this._root._dispatchEvent('tile-loaded', { tile: this });
 		} catch (error) {
 			console.error(`Tile load failed ${this.z}-${this.x}-${this.y}:`, error);
+			// 记录失败并设置指数退避：1s, 2s, 4s, ... 上限 30s
+			this._loadFailCount++;
+			this._nextLoadRetryAt = Date.now() + Math.min(1000 * Math.pow(2, this._loadFailCount), 30000);
 		} finally {
 			this._isLoading = false;
 		}
@@ -512,6 +568,9 @@ export class Tile extends BabylonTransformNode {
 				this._model.refreshBoundingInfo(true, true);
 				// 对齐 three-tile: 更新后同步 checkPoint.y
 				this._checkPoint.y = newModel.getBoundingInfo()?.boundingBox?.maximumWorld?.y || 0;
+				// 替换 _model 后新模型默认启用，立即按当前视锥体重算可见性，
+				// 避免视锥体外的瓦片错误显示一帧
+				this._root.updateVisibility();
 				this._root._dispatchEvent('tile-loaded', { tile: this });
 			}
 		} catch (error) {
