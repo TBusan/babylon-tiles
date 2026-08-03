@@ -16,6 +16,7 @@ import { Ray } from '@babylonjs/core/Culling/ray';
 
 import { Tile } from './Tile.js';
 import { TileLoader } from '../loader/TileLoader.js';
+import { TextureCache } from '../loader/TextureCache.js';
 import type { ITileLoader } from '../loader/ITileLoader.js';
 import type { IProjection } from '../projection/IProjection.js';
 import { ProjectionFactory } from '../projection/ProjectionFactory.js';
@@ -702,6 +703,9 @@ export class TileMap extends BabylonTransformNode {
 		if (loader.backgroundMaterial) {
 			loader.backgroundMaterial.dispose();
 		}
+
+		// 释放全局纹理缓存（此时瓦片树已卸载，缓存中的纹理不再被引用）
+		TextureCache.clear();
 
 		// 释放全局 Worker 池
 		TerrainWorkerPool.dispose();

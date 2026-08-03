@@ -36,6 +36,16 @@ export interface TileGeometryOptions {
 	 * 位置外扩 + UV 外扩（名义边仍映射 0/1），外扩区靠 CLAMP 采样边缘纹素。
 	 */
 	bleed?: number;
+	/**
+	 * 瓦片世界宽度（米）。地形（heights）路径用于在"世界尺寸"空间计算法线：
+	 * 瓦片几何位于倾斜局部空间（X/Z ∈ [-0.5,0.5]，Y = 米制高程），而世界矩阵为非均匀
+	 * 缩放 diag(S,1,S)。若直接对倾斜几何 ComputeNormals，法线近似水平 + 微弱 Y，
+	 * 着色器 inverse-transpose（NONUNIFORMSCALING，把 X/Z 除以 S）会把它压成 (0,±1,0)，
+	 * 地形全黑或全亮。正确做法：先在 X/Z × S 的世界尺寸空间算真实世界法线，再映射回
+	 * 倾斜局部空间（X/Z × S），着色器 inverse-transpose 恰好恢复原方向。
+	 * 默认 1（平瓦片无影响）。
+	 */
+	worldScale?: number;
 }
 
 /**
@@ -60,6 +70,7 @@ export class TileGeometry {
 			skirtHeight = 0,
 			flipX = false,
 			bleed = 0,
+			worldScale = 1,
 		} = options;
 
 		// 创建顶点数据
@@ -126,11 +137,11 @@ export class TileGeometry {
 			}
 		}
 
-		// 计算法向量：有高程数据时使用 ComputeNormals 计算真实法线，
+		// 计算法向量：有高程数据时在世界尺寸空间计算真实法线（见 _computeTerrainNormals），
 		// 否则使用默认向上法线（平面瓦片）
 		const normals: number[] = [];
 		if (heights) {
-			VertexData.ComputeNormals(positions, indices, normals);
+			normals.push(...TileGeometry._computeTerrainNormals(positions, indices, worldScale));
 		} else {
 			for (let i = 0; i < positions.length / 3; i++) {
 				normals.push(0, 1, 0);
@@ -296,6 +307,7 @@ export class TileGeometry {
 	 *                   推荐值：低精度 50-100，中精度 10-30，高精度 1-5
 	 * @param skirtHeight - 裙边高度（局部坐标），默认 0
 	 * @param heightScale - 高程缩放因子（将米制高程转换为局部坐标），默认 1
+	 * @param worldScale - 瓦片世界宽度（米），用于在世界尺寸空间计算法线（见 _computeTerrainNormals），默认 1
 	 * @returns 瓦片网格
 	 */
 	public static createMartiniTile(
@@ -304,7 +316,8 @@ export class TileGeometry {
 		terrain: Float32Array,
 		maxError: number = 0,
 		skirtHeight: number = 0,
-		heightScale: number = 1
+		heightScale: number = 1,
+		worldScale: number = 1
 	): Mesh {
 		const gridSize = Math.floor(Math.sqrt(terrain.length));
 
@@ -325,10 +338,12 @@ export class TileGeometry {
 		vertexData.uvs = Array.from(geoData.uvs);
 		vertexData.indices = Array.from(geoData.indices);
 
-		// 计算法向量
-		const normals: number[] = [];
-		VertexData.ComputeNormals(vertexData.positions, vertexData.indices, normals);
-		vertexData.normals = normals;
+		// 计算法向量（世界尺寸空间，见 _computeTerrainNormals 注释）
+		vertexData.normals = TileGeometry._computeTerrainNormals(
+			vertexData.positions as number[],
+			vertexData.indices as number[],
+			worldScale
+		);
 
 		// 添加裙边（从边缘顶点向下延伸）
 		if (skirtHeight > 0) {
@@ -340,6 +355,62 @@ export class TileGeometry {
 		vertexData.applyToMesh(mesh);
 
 		return mesh;
+	}
+
+	/**
+	 * 计算地形瓦片法线。
+	 *
+	 * 瓦片几何位于倾斜局部空间：X/Z ∈ [-0.5, 0.5]（瓦片单位），Y = 米制高程，
+	 * 而瓦片世界矩阵为非均匀缩放 diag(S,1,S)（S = 瓦片世界宽度，约 3×10^5m）。
+	 *
+	 * 若直接对倾斜几何 ComputeNormals：三角形在 X/Z 方向的跨度（≈1/256）远小于
+	 * Y 方向高程差（≈几百米），法线近似水平 + 微弱 Y；着色器 NONUNIFORMSCALING
+	 * 分支取 inverse-transpose = diag(1/S,1,1/S)，把法线 X/Z 分量除以 S 压到 ~1e-6，
+	 * 微弱 Y 反而占主导 → 法线退化为 (0,±1,0)，坡度方向全部丢失，地形要么全黑
+	 * （Y 为负）要么全亮（Y 为正）。
+	 *
+	 * 正确做法：先在"世界尺寸"空间（X/Z × S，单位一致为米）对同一套索引 ComputeNormals，
+	 * 得到真实世界法线 W；再映射回倾斜局部空间存储：L = normalize(S·Wx, Wy, S·Wz)。
+	 * 着色器 inverse-transpose 施加 diag(1/S,1,1/S)·L = (Wx, Wy, Wz)/|…| → 归一化后
+	 * 恰好恢复 W，坡度方向与明暗关系正确。
+	 *
+	 * 另注意 Babylon ComputeNormals 默认（左手系）输出与几何右手系绕序相反的法线：
+	 * 瓦片绕序按右手系向上（crossY > 0），默认输出却向下 → 需取反（-W）才是朝上法线。
+	 *
+	 * @param positions - 局部空间顶点位置（X/Y/Z）
+	 * @param indices - 三角形索引
+	 * @param worldScale - 瓦片世界宽度（米），即非均匀缩放 diag(S,1,S) 的 S
+	 * @returns 倾斜局部空间的法线数组（归一化）
+	 * @private
+	 */
+	private static _computeTerrainNormals(
+		positions: number[],
+		indices: number[],
+		worldScale: number
+	): number[] {
+		// 世界尺寸临时位置：X/Z 乘 S，Y 保持米制（与真实世界几何一致）
+		const worldPositions = new Float32Array(positions.length);
+		for (let i = 0; i < positions.length; i += 3) {
+			worldPositions[i] = positions[i] * worldScale;
+			worldPositions[i + 1] = positions[i + 1];
+			worldPositions[i + 2] = positions[i + 2] * worldScale;
+		}
+
+		// 在世界尺寸空间计算法线（单位一致，坡度信息完整保留）
+		const worldNormals: number[] = [];
+		VertexData.ComputeNormals(Array.from(worldPositions), indices, worldNormals);
+
+		// Babylon 默认输出与右手系绕序相反 → 取反得朝上真实世界法线；
+		// 再映射回倾斜局部空间（X/Z × S）并归一化，供着色器 inverse-transpose 恢复。
+		const normals: number[] = [];
+		for (let i = 0; i < worldNormals.length; i += 3) {
+			const nx = -worldNormals[i] * worldScale;
+			const ny = -worldNormals[i + 1];
+			const nz = -worldNormals[i + 2] * worldScale;
+			const len = Math.hypot(nx, ny, nz) || 1;
+			normals.push(nx / len, ny / len, nz / len);
+		}
+		return normals;
 	}
 
 	/**

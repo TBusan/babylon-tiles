@@ -15,7 +15,7 @@ import { Effect } from '@babylonjs/core/Materials/effect';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import '@babylonjs/loaders/glTF';
 
-import { TileMap, GDSource } from '@babylon-tile/lib';
+import { TileMap, GDSource, MapBoxTerrainSource } from '@babylon-tile/lib';
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
@@ -27,6 +27,11 @@ const REST_AZIMUTH_DIST = 8e6; // 超过此距离锁定方位角
 const MAX_DISTANCE = 3e7;
 const MIN_DISTANCE = 10;
 
+// ======================== 地形（Mapbox raster-dem） ========================
+// TODO: 填入 Mapbox 公开 token（https://account.mapbox.com/）后地形生效。
+// 空 token 时 DEM 请求失败会自动退化为平地，不影响影像底图。
+const MAPBOX_TOKEN = 'pk.eyJ1IjoidGJ1c2FuIiwiYSI6ImNtZjY2emZneDBkY24ybXB4cmpvdmwzNWYifQ.h6tcQ380WN5AW6fZr08how';
+
 const createScene = async (): Promise<Scene> => {
 	const scene = new Scene(engine);
 	scene.clearColor = BACK_COLOR;
@@ -37,7 +42,14 @@ const createScene = async (): Promise<Scene> => {
 	scene.fogDensity = 0; // 初始为 0，动态调整
 
 	// ======================== 相机（对齐 three-tile PerspectiveCamera(70, ...)） ========================
-	const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 2.8e7, Vector3.Zero(), scene);
+	// 初始视点：甘南/积石山（104°E 35°N）。
+	// 注意：地图投影由影像源决定（GDSource.projectionID='3857' → Web Mercator，lon0=90），
+	// 不是 WGS84 线性投影；104°E 35°N 的墨卡托世界坐标为 geo2world(104,35) =
+	// (1558472.87, 0, 4163881.14)（1° 经度 ≈ 111.3km，纬度 35° 墨卡托北向 ≈ 4163.9km）。
+	// 半径 12000（z≈11，瓦片 ~9.8km）：相机高 = radius·cos(β) ≈ 6000m，
+	// 该区域 DEM 海拔 2400-2900m（3000m 级山峰），相机需明显高出峰顶，
+	// 否则初始视图会被山体遮挡只剩天空（radius=5000 时相机 y≈2500 与山峰同高）。
+	const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 12000, new Vector3(1558472.87, 0, 4163881.14), scene);
 	camera.fov = 70 * Math.PI / 180; // 70° FOV（three-tile 默认 70）
 	// ---- 鼠标按键映射：MAP 模式 = 左键平移、右键旋转（与 three-tile 一致）----
 	// attachControl(noPreventDefault, useCtrlForPanning, panningMouseButton)
@@ -91,6 +103,7 @@ const createScene = async (): Promise<Scene> => {
 				maxLevel: 18,
 			}),
 		],
+		demSource: new MapBoxTerrainSource({ token: MAPBOX_TOKEN }),
 		minLevel: 2,
 		maxLevel: 18,
 		lon0: 90, // 中央经度 90°E（对齐 three-tile demo）

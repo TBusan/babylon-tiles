@@ -12,10 +12,13 @@ import { Vector3 as BabylonVector3 } from '@babylonjs/core/Maths/math.vector';
 import { Matrix, Quaternion } from '@babylonjs/core/Maths/math.vector';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 
 import { FrustumEx } from './FrustumEx.js';
 import { createChildren, LODAction, LODEvaluate } from './util.js';
 import type { ITileLoader } from '../loader/ITileLoader.js';
+import { TextureCache } from '../loader/TextureCache.js';
+import { beginTileFadeIn, isTileFadingIn } from './TileFade.js';
 
 /** 相机世界坐标（模块级，每帧更新一次） */
 const cameraWorldPosition = new BabylonVector3();
@@ -492,9 +495,28 @@ export class Tile extends BabylonTransformNode {
 		// 否则本瓦片显示（填充加载间隙 / 边界空洞），并递归压制后代。
 		const inFrustumTiles = subTiles.filter(c => c.inFrustum);
 		const allLoaded = inFrustumTiles.length > 0 && inFrustumTiles.every(c => !!c._model);
-		const shouldShow = !suppressed && this.inFrustum && !allLoaded;
+		// 有子瓦片正在交叉淡入时，父瓦片保持可见作为不透明底衬：淡入瓦片
+		// alpha=0 的瞬间若父瓦片已隐藏，会露出背景/清屏色（白闪）。
+		// 淡入完成后 isTileFadingIn 返回 false，下次 updateVisibility 即隐藏父瓦片。
+		const anyFading = inFrustumTiles.some(c => isTileFadingIn(c));
+		const shouldShow = !suppressed && this.inFrustum && (!allLoaded || anyFading);
 		this.showing = shouldShow;
-		subTiles.forEach(c => c.updateVisibility(suppressed || shouldShow));
+		if (shouldShow && anyFading) {
+			// 父瓦片作为不透明底衬显示；淡入期间所有已加载子瓦片保持可见：
+			// 淡入中的子瓦片叠加在父瓦片上，已完成淡入的兄弟瓦片不闪隐。
+			// 若把兄弟瓦片一并压制，会在它们的区域露出父瓦片粗纹理，
+			// 待 fade 结束后才弹回细纹理——衔接处二次闪烁。
+			// 未加载的子瓦片无模型，压制与否不产生任何渲染。
+			subTiles.forEach(c => {
+				if (c._model) {
+					c.updateVisibility(false);
+				} else {
+					c.updateVisibility(true);
+				}
+			});
+		} else {
+			subTiles.forEach(c => c.updateVisibility(suppressed || shouldShow));
+		}
 	}
 
 	/**
@@ -509,11 +531,22 @@ export class Tile extends BabylonTransformNode {
 
 			// 检查加载完成后瓦片是否仍在树中（可能在加载期间被 LOD REMOVE 卸载）
 			if (!this.parent) {
-				// 释放孤儿模型的所有资源（包括纹理）
+				// 释放孤儿模型的所有资源（包括多影像叠加的覆盖层子网格材质与基材质；
+				// 缓存的纹理交还引用供复用，未缓存的直接释放）
+				const childMeshes = model.getChildMeshes();
+				for (const child of childMeshes) {
+					if (child.material) {
+						const textures = child.material.getActiveTextures();
+						for (const tex of textures) {
+							TextureCache.release(tex);
+						}
+						child.material.dispose();
+					}
+				}
 				if (model.material) {
 					const textures = model.material.getActiveTextures();
 					for (const tex of textures) {
-						tex.dispose();
+						TextureCache.release(tex);
 					}
 					model.material.dispose();
 				}
@@ -533,6 +566,11 @@ export class Tile extends BabylonTransformNode {
 			model.computeWorldMatrix(true);
 			// 在 setParent 和恢复局部变换之后刷新包围盒
 			model.refreshBoundingInfo(true, true);
+
+			// 新瓦片交叉淡入：父瓦片（作为填充显示）仍在屏上时，淡入本瓦片
+			// 平滑 coarse→fine 的内容替换，消除跨 LOD 衔接处在缩放/加载时的
+			// 生硬弹出（闪烁）。父瓦片未显示（无底衬）时直接显示，不淡入。
+			this._beginFadeInIfNeeded();
 
 			// 对齐 three-tile: 加载后更新 checkPoint.y 为模型最高海拔
 			// three-tile: this._checkPoint.y = this._model.geometry.boundingBox?.max.z || 0
@@ -555,6 +593,38 @@ export class Tile extends BabylonTransformNode {
 		} finally {
 			this._isLoading = false;
 		}
+	}
+
+	/**
+	 * 若父瓦片仍在屏上（作为 coarse 填充显示），则对刚加载的模型做交叉淡入。
+	 * 只收集本瓦片自己的材质（基底 + 覆盖层子网格）；共享材质（如 backgroundMaterial）
+	 * 不淡入，避免影响其他瓦片。
+	 */
+	private _beginFadeInIfNeeded(): void {
+		const parent = this.parent;
+		if (!(parent instanceof Tile) || !parent.showing || !this._model) {
+			return;
+		}
+
+		const mats: StandardMaterial[] = [];
+		const base = this._model.material;
+		if (base instanceof StandardMaterial && !this._isSharedMaterial(base)) {
+			mats.push(base);
+		}
+		for (const child of this._model.getChildMeshes()) {
+			if (child.material instanceof StandardMaterial && !this._isSharedMaterial(child.material)) {
+				mats.push(child.material);
+			}
+		}
+
+		if (mats.length > 0 && this._model) {
+			beginTileFadeIn(this, this._model, mats);
+		}
+	}
+
+	/** 材质是否被其他网格共享（如 backgroundMaterial 被所有回退瓦片共用）——共享材质不淡入 */
+	private _isSharedMaterial(material: StandardMaterial): boolean {
+		return this._scene.meshes.some(m => m !== this._model && m.material === material);
 	}
 
 	/**
@@ -640,7 +710,7 @@ export class Tile extends BabylonTransformNode {
 				if (child.material) {
 					const textures = child.material.getActiveTextures();
 					for (const tex of textures) {
-						tex.dispose();
+						TextureCache.release(tex);
 					}
 					child.material.dispose();
 				}
@@ -648,12 +718,12 @@ export class Tile extends BabylonTransformNode {
 				child.dispose();
 			}
 
-			// 释放主网格材质
+			// 释放主网格材质（缓存的纹理交还引用供复用；未缓存的直接释放）
 			const material = this._model.material;
 			if (material) {
 				const textures = material.getActiveTextures();
 				for (const tex of textures) {
-					tex.dispose();
+					TextureCache.release(tex);
 				}
 				material.dispose();
 			}

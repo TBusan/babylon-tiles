@@ -19,6 +19,7 @@ import { TileGeometry } from '../geometry/TileGeometry.js';
 import { TileMaterial } from '../material/TileMaterial.js';
 import { TerrainRGBParser } from './TerrainRGBLoader.js';
 import { TerrainWorkerPool } from './WorkerPool.js';
+import { TextureCache } from './TextureCache.js';
 
 /**
  * 平瓦片边缘出血量（Mapbox tile overdraw）：四边各外扩 2 纹素（256px 瓦片）。
@@ -115,6 +116,8 @@ export class TileLoader implements ITileLoader {
 		this._demSource = value;
 		this._updateDemProjBounds();
 	}
+	/** DEM 加载失败告警计数（限制重复告警刷屏，如空 token 时每瓦片失败都会进来） */
+	private _demFailWarned = 0;
 
 	/** 获取边界 */
 	public get bounds(): [number, number, number, number] {
@@ -288,18 +291,27 @@ export class TileLoader implements ITileLoader {
 				mesh.material !== null &&
 				mesh.material !== this.backgroundMaterial &&
 				this._isMaterialUsedElsewhere(mesh.material, mesh);
-			if (!sharedBase) {
-				if (mesh.material && mesh.material !== this.backgroundMaterial) {
-					const textures = mesh.material.getActiveTextures();
+			if (mesh.material && mesh.material !== this.backgroundMaterial && !sharedBase) {
+				const textures = mesh.material.getActiveTextures();
+				for (const tex of textures) {
+					TextureCache.release(tex);
+				}
+				mesh.material.dispose();
+			}
+			// 覆盖层子网格的材质/纹理一并释放（mesh.dispose 不负责材质，避免误伤缓存纹理）
+			for (const child of mesh.getChildMeshes()) {
+				if (child.material) {
+					const textures = child.material.getActiveTextures();
 					for (const tex of textures) {
-						tex.dispose();
+						TextureCache.release(tex);
 					}
-					mesh.material.dispose();
+					child.material.dispose();
 				}
 			}
 			mesh.geometry?.dispose();
-			// 共享 base 材质时避免递归释放材质/纹理（否则会连带销毁共享材质）
-			mesh.dispose(false, !sharedBase);
+			// 共享 base 材质时避免递归释放材质/纹理（否则会连带销毁共享材质）；
+			// 非共享时材质/纹理已在上方手动释放，这里只释放网格自身与子网格几何
+			mesh.dispose(false, false);
 
 			resultMesh = newMesh;
 		} else if (updateMaterial) {
@@ -307,11 +319,18 @@ export class TileLoader implements ITileLoader {
 			if (mesh.material && mesh.material !== this.backgroundMaterial && !this._isMaterialUsedElsewhere(mesh.material, mesh)) {
 				const textures = mesh.material.getActiveTextures();
 				for (const tex of textures) {
-					tex.dispose();
+					TextureCache.release(tex);
 				}
 				mesh.material.dispose();
 			}
 			for (const child of [...mesh.getChildMeshes()]) {
+				if (child.material) {
+					const textures = child.material.getActiveTextures();
+					for (const tex of textures) {
+						TextureCache.release(tex);
+					}
+					child.material.dispose();
+				}
 				child.dispose();
 			}
 		}
@@ -378,8 +397,21 @@ export class TileLoader implements ITileLoader {
 	 * @param mesh - 要卸载的瓦片网格
 	 */
 	public unload(mesh: Mesh): void {
-		if (mesh.material) {
+		if (mesh.material && mesh.material !== this.backgroundMaterial) {
+			const textures = mesh.material.getActiveTextures();
+			for (const tex of textures) {
+				TextureCache.release(tex);
+			}
 			mesh.material.dispose();
+		}
+		for (const child of mesh.getChildMeshes()) {
+			if (child.material) {
+				const textures = child.material.getActiveTextures();
+				for (const tex of textures) {
+					TextureCache.release(tex);
+				}
+				child.material.dispose();
+			}
 		}
 		mesh.geometry?.dispose();
 		mesh.dispose();
@@ -411,27 +443,49 @@ export class TileLoader implements ITileLoader {
 		lonLatBounds: [number, number, number, number];
 	}): Promise<Mesh> {
 		try {
-			// 如果有地形数据源且层级 >= 最小层级且与数据源边界相交
+			// 有地形数据源且层级 >= 最小层级且与数据源边界相交时加载地形；
+			// 层级超过 demSource.maxLevel 时做 DEM 超采样（裁父级 maxLevel 瓦片的子区域）
 			if (
 				this._demSource &&
 				coords.z >= this._demSource.minLevel &&
-				coords.z <= this._demSource.maxLevel &&
 				this._intersectsBounds(this._demSource, coords.bounds)
 			) {
 				try {
-					const url = this._demSource.getUrl(coords.x, coords.y, coords.z);
+					// DEM 超采样：z 超过 demSource.maxLevel 时，取父级 maxLevel 瓦片并裁剪
+					// 本瓦片的子区域，地形延续到更深层级，避免深缩放"突然变平"
+					const demZ = Math.min(coords.z, this._demSource.maxLevel);
+					const k = coords.z - demZ;
+					const shift = 1 << k; // k=0 时为 1（未超采样），URL 即本瓦片
+					const demX = Math.floor(coords.x / shift);
+					const demY = Math.floor(coords.y / shift);
+					const url = this._demSource.getUrl(demX, demY, demZ);
 					if (url) {
 						const imgData = await this._loadImageData(url);
-						
+
 						// 使用 Worker 池或主线程解析地形数据
-						const dem = this.useWorkerParse
+						let dem = this.useWorkerParse
 							? await TerrainWorkerPool.parse(imgData)
 							: TerrainRGBParser.parse(imgData);
+
+						if (k > 0) {
+							dem = this._cropDemQuadrant(
+								dem,
+								k,
+								coords.x - demX * shift, // 本瓦片在父瓦片内的列象限（向东递增）
+								coords.y - demY * shift // 行象限（向南递增）
+							);
+						}
 						
 						// DEM 高程为原始米制（与 three-tile 一致），直接使用，无需缩放
 						const heightScale = 1;
 						const skirtHeight = 100; // 米制裙边高度
-						
+
+						// 瓦片世界尺寸缩放系数 S = mapWidth / 2^z（米/瓦片单位）。
+						// 瓦片几何位于倾斜局部空间（X/Z 单位 1、Y 米制），而节点世界矩阵为
+						// diag(S,1,S)。计算法线时必须先在"S 倍"的世界尺寸空间做（否则
+						// X/Z 跨度 ~1/256 会把法线压成水平），并据此映射回局部空间存储。
+						const worldScale = this._projection.mapWidth / Math.pow(2, coords.z);
+
 						// 检查 DEM 数据是否为 2^n+1 尺寸（Martini 要求）
 						const gridSize = Math.floor(Math.sqrt(dem.length));
 						const isPerfectSquare = gridSize * gridSize === dem.length;
@@ -448,7 +502,8 @@ export class TileLoader implements ITileLoader {
 								dem,
 								this.martiniMaxError,
 								skirtHeight,
-								heightScale
+								heightScale,
+								worldScale
 							);
 						}
 						
@@ -491,11 +546,13 @@ export class TileLoader implements ITileLoader {
 								segmentsH: segments,
 								heights,
 								skirtHeight,
+								worldScale,
 							}
 						);
 					}
 				} catch (error) {
-					if (this.debug > 0) {
+					if (this.debug > 0 && this._demFailWarned < 3) {
+						this._demFailWarned++;
 						console.warn(`DEM load failed for tile ${coords.z}-${coords.x}-${coords.y}, fallback to flat:`, error);
 					}
 				}
@@ -526,29 +583,79 @@ export class TileLoader implements ITileLoader {
 		return new Promise((resolve, reject) => {
 			const img = new Image();
 			img.crossOrigin = 'anonymous';
+			let settled = false;
+			const settle = (fn: () => void) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timeout);
+					fn();
+				}
+			};
+
+			// 安全超时：DEM 图片挂起时若无限等待，load() 的下载槽位会永久泄漏，
+			// 10 个槽位最终全部卡死（与 _loadImageElement 修复的同类问题）。
+			const timeout = setTimeout(() => {
+				if (this.debug > 0) {
+					console.warn(`DEM image load timeout for ${url}`);
+				}
+				// 中止挂起的下载
+				img.src = '';
+				settle(() => reject(new Error(`DEM image load timeout: ${url}`)));
+			}, 15000);
 
 			img.onload = () => {
-				const canvas = document.createElement('canvas');
-				canvas.width = img.width;
-				canvas.height = img.height;
-				const ctx = canvas.getContext('2d');
-
-				if (!ctx) {
-					reject(new Error('Failed to get 2D context'));
-					return;
+				try {
+					const canvas = document.createElement('canvas');
+					canvas.width = img.width;
+					canvas.height = img.height;
+					const ctx = canvas.getContext('2d');
+					if (!ctx) {
+						settle(() => reject(new Error('Failed to get 2D context')));
+						return;
+					}
+					ctx.drawImage(img, 0, 0);
+					const imgData = ctx.getImageData(0, 0, img.width, img.height);
+					settle(() => resolve(imgData.data));
+				} catch (e) {
+					settle(() => reject(e as Error));
 				}
-
-				ctx.drawImage(img, 0, 0);
-				const imgData = ctx.getImageData(0, 0, img.width, img.height);
-				resolve(imgData.data);
 			};
 
 			img.onerror = () => {
-				reject(new Error(`Failed to load DEM image: ${url}`));
+				settle(() => reject(new Error(`Failed to load DEM image: ${url}`)));
 			};
 
 			img.src = url;
 		});
+	}
+
+	/**
+	 * 从父级 DEM 网格裁剪出子瓦片的子区域（DEM 超采样）
+	 * @param dem - 父级 DEM 高程数组（第 0 行在北）
+	 * @param k - 超采样级差（本瓦片 z 与父级 z 的差值）
+	 * @param subX - 本瓦片在父瓦片内的列象限（0..2^k-1，向东递增）
+	 * @param subY - 本瓦片在父瓦片内的行象限（0..2^k-1，向南递增）
+	 * @returns 裁剪后的高程数组（子网格尺寸恒为 2^n+1，Martini 兼容）
+	 */
+	private _cropDemQuadrant(dem: Float32Array, k: number, subX: number, subY: number): Float32Array {
+		const parentSize = Math.floor(Math.sqrt(dem.length));
+		const div = Math.pow(2, k);
+		// 子网格在父网格中的行/列范围（两端均含）；subY 向南递增，而 DEM 第 0 行在北，
+		// 故从父级 row0 起按序连续截取即可保持"行 0 在北"约定，Martini 内部翻转不变。
+		const col0 = Math.round((subX * (parentSize - 1)) / div);
+		const col1 = Math.round(((subX + 1) * (parentSize - 1)) / div);
+		const row0 = Math.round((subY * (parentSize - 1)) / div);
+		const row1 = Math.round(((subY + 1) * (parentSize - 1)) / div);
+		const cols = col1 - col0 + 1;
+		const rows = row1 - row0 + 1;
+		const out = new Float32Array(cols * rows);
+		for (let r = 0; r < rows; r++) {
+			const srcRow = row0 + r;
+			for (let c = 0; c < cols; c++) {
+				out[r * cols + c] = dem[srcRow * parentSize + col0 + c];
+			}
+		}
+		return out;
 	}
 
 	/**
@@ -601,9 +708,14 @@ export class TileLoader implements ITileLoader {
 				const needsBoundsClip = this._needsBoundsClip(source, coords.bounds);
 
 				if (needsClip || needsBoundsClip) {
-					texture = await this._clipTexture(
+					const clipped = await this._clipTexture(
 						texture, url, clipBounds, source, coords.bounds
 					);
+					// 裁剪产物替换源纹理：本瓦片不再持有源纹理，交还缓存供其他瓦片复用
+					if (clipped !== texture) {
+						TextureCache.release(texture);
+						texture = clipped;
+					}
 				}
 
 				// 创建材质
@@ -760,8 +872,8 @@ export class TileLoader implements ITileLoader {
 			const clippedTexture = new Texture(null, this._scene);
 			clippedTexture.updateURL(canvas.toDataURL());
 
-			// 释放原始纹理
-			texture.dispose();
+			// 原始纹理由 TextureCache 持有，供其他瓦片复用，不在此处释放
+			// （裁剪产物是独立纹理，随瓦片卸载正常 dispose）。
 
 			return clippedTexture;
 		} catch (error) {
@@ -815,6 +927,15 @@ export class TileLoader implements ITileLoader {
 		url: string,
 		coords: { x: number; y: number; z: number }
 	): Promise<Texture | undefined> {
+		// 命中缓存：直接复用已上传 GPU 的纹理，跳过网络下载 + 解码 + 上传。
+		// 旋转/缩放 churn 时同一 URL 的瓦片反复进出视锥，缓存消除了加载风暴。
+		const cached = TextureCache.get(url);
+		if (cached) {
+			// 本瓦片开始持有该纹理（卸载时对应 release 一次）
+			TextureCache.retain(cached);
+			return Promise.resolve(cached);
+		}
+
 		return new Promise<Texture | undefined>((resolve) => {
 			let settled = false;
 			let texture: Texture | undefined;
@@ -834,6 +955,11 @@ export class TileLoader implements ITileLoader {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timeout);
+				// 下载成功后入缓存（下次同 URL 瓦片直接复用），并记录本瓦片的持有
+				if (texture) {
+					TextureCache.put(url, texture);
+					TextureCache.retain(texture);
+				}
 				resolve(texture);
 			};
 

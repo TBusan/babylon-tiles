@@ -27,12 +27,37 @@ export class TerrainRGBParser {
 	 */
 	public static parse(imgData: Uint8ClampedArray): Float32Array {
 		const pixelCount = imgData.length >>> 2; // 除以4得到像素数量
-		const dem = new Float32Array(pixelCount);
+		const p = Math.floor(Math.sqrt(pixelCount));
 
-		for (let i = 0; i < pixelCount; i++) {
-			dem[i] = this._getZ(imgData, i);
+		// 非正方形数据：保持原行为（逐像素线性输出）
+		if (p * p !== pixelCount) {
+			const dem = new Float32Array(pixelCount);
+			for (let i = 0; i < pixelCount; i++) {
+				dem[i] = this._getZ(imgData, i);
+			}
+			return dem;
 		}
 
+		// 正方形 p×p（如 256px 瓦片）上采样为 (p+1)×(p+1)（如 257×257，2^n+1）：
+		// 复制最后一行/列作为南缘/东缘采样点。这样每个瓦片都包含与相邻瓦片共享的
+		// 边缘采样点（边缘高度一致、无缝），且网格满足 Martini 的 2^n+1 要求。
+		// （TileLoader 的 DEM 超采样裁剪依赖这一点：256 无法被二等分为两个 2^n+1。）
+		const dem = new Float32Array((p + 1) * (p + 1));
+		for (let i = 0; i < pixelCount; i++) {
+			const r = Math.floor(i / p);
+			const c = i - r * p;
+			dem[r * (p + 1) + c] = this._getZ(imgData, i);
+		}
+		// 南缘（复制最后一行）
+		for (let c = 0; c < p; c++) {
+			dem[p * (p + 1) + c] = dem[(p - 1) * (p + 1) + c];
+		}
+		// 东缘（复制最后一列）
+		for (let r = 0; r < p; r++) {
+			dem[r * (p + 1) + p] = dem[r * (p + 1) + (p - 1)];
+		}
+		// 东南角
+		dem[p * (p + 1) + p] = dem[(p - 1) * (p + 1) + (p - 1)];
 		return dem;
 	}
 

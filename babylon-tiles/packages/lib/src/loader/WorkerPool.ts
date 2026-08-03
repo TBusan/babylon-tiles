@@ -234,22 +234,38 @@ export class TerrainWorkerPool {
 		self.onmessage = function(e) {
 			const imgData = e.data;
 			const pixelCount = imgData.length >>> 2;
-			const dem = new Float32Array(pixelCount);
+			const p = Math.floor(Math.sqrt(pixelCount));
 
-			for (let i = 0; i < pixelCount; i++) {
-				const index = i * 4;
-				const r = imgData[index];
-				const g = imgData[index + 1];
-				const b = imgData[index + 2];
-				const a = imgData[index + 3];
-
-				if (a === 0) {
-					dem[i] = 0;
-				} else {
-					dem[i] = -10000 + (((r << 16) | (g << 8) | b) * 0.1);
+			if (p * p !== pixelCount) {
+				const dem = new Float32Array(pixelCount);
+				for (let i = 0; i < pixelCount; i++) {
+					const index = i * 4;
+					const a = imgData[index + 3];
+					if (a === 0) {
+						dem[i] = 0;
+					} else {
+						dem[i] = -10000 + (((imgData[index] << 16) | (imgData[index + 1] << 8) | imgData[index + 2]) * 0.1);
+					}
 				}
+				self.postMessage(dem, [dem.buffer]);
+				return;
 			}
 
+			// 与 TerrainRGBParser.parse 一致：p×p 上采样为 (p+1)×(p+1)，复制南/东缘，
+			// 使网格为 2^n+1（Martini 兼容）且相邻瓦片边缘高度一致。
+			const dem = new Float32Array((p + 1) * (p + 1));
+			for (let i = 0; i < pixelCount; i++) {
+				const r = Math.floor(i / p);
+				const c = i - r * p;
+				const index = i * 4;
+				const a = imgData[index + 3];
+				dem[r * (p + 1) + c] = (a === 0)
+					? 0
+					: -10000 + (((imgData[index] << 16) | (imgData[index + 1] << 8) | imgData[index + 2]) * 0.1);
+			}
+			for (let c = 0; c < p; c++) dem[p * (p + 1) + c] = dem[(p - 1) * (p + 1) + c];
+			for (let r = 0; r < p; r++) dem[r * (p + 1) + p] = dem[r * (p + 1) + (p - 1)];
+			dem[p * (p + 1) + p] = dem[(p - 1) * (p + 1) + (p - 1)];
 			self.postMessage(dem, [dem.buffer]);
 		};
 	`;

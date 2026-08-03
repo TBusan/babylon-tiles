@@ -67,6 +67,68 @@ export class MapBoxSource extends TileSource {
 }
 
 /**
+ * MapBox 地形数据源配置
+ */
+export interface MapBoxTerrainSourceOptions extends SourceOptions {
+	/** MapBox 访问令牌 */
+	token?: string;
+	/** 瓦片集 ID，默认 'mapbox.terrain-rgb' */
+	tileset?: string;
+}
+
+/**
+ * MapBox 地形数据源（Mapbox raster-dem，Terrain-RGB 编码）
+ * 高程瓦片为 256px PNG，解析后为 257×257 网格（2^8+1），Martini 兼容。
+ * 超出 maxLevel 的层级由 TileLoader 的 DEM 超采样裁剪（父级瓦片子区域）承担。
+ */
+export class MapBoxTerrainSource extends TileSource {
+	/** 数据类型标识 */
+	public dataType: string = 'terrain-rgb';
+
+	/** 版权信息 */
+	public attribution: string = '© Mapbox';
+
+	/** 最大显示级别（raster-dem 可靠层级；更深由超采样承担） */
+	public maxLevel: number = 14;
+
+	/** MapBox 访问令牌 */
+	public token: string = '';
+
+	/** 瓦片集 ID */
+	public tileset: string = 'mapbox.terrain-rgb';
+
+	/** 默认 URL 模板 */
+	public url: string = 'https://api.mapbox.com/v4/{tileset}/{z}/{x}/{y}.pngraw?access_token={token}';
+
+	/**
+	 * 构造函数
+	 * @param options - MapBox 地形数据源配置
+	 */
+	constructor(options: MapBoxTerrainSourceOptions = {}) {
+		super(options);
+		// 注意：super 的 Object.assign 先应用 options，但 useDefineForClassFields 下
+		// 子类字段初始化器随后会覆盖回默认值，故这里把可覆盖字段从 options 重新取回
+		// （?? 可保留 maxLevel=0 之类的合法值）。
+		this.dataType = options.dataType ?? 'terrain-rgb';
+		this.attribution = options.attribution ?? '© Mapbox';
+		this.maxLevel = options.maxLevel ?? 14;
+		this.token = options.token ?? '';
+		this.tileset = options.tileset ?? 'mapbox.terrain-rgb';
+
+		if (options.url) {
+			this.url = options.url;
+		}
+	}
+
+	/**
+	 * 获取瓦片 URL
+	 */
+	public getUrl(x: number, y: number, z: number): string {
+		return super.getUrl(x, y, z, { tileset: this.tileset });
+	}
+}
+
+/**
  * 天地图数据源配置
  */
 export interface TDTSourceOptions extends SourceOptions {
