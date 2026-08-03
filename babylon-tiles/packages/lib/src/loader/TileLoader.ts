@@ -10,6 +10,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { Constants } from '@babylonjs/core/Engines/constants';
 
 import type { ITileLoader, TileLoadParams } from './ITileLoader.js';
 import type { IProjection } from '../projection/IProjection.js';
@@ -835,9 +836,10 @@ export class TileLoader implements ITileLoader {
 				texture = new Texture(
 					url,
 					this._scene,
-					undefined,  // noMipmap
+					true,   // noMipmap：瓦片纹理使用双线性（无 mipmap）过滤（见 TileMaterial），
+					        // 生成 mipmap 金字塔只浪费显存与上传带宽，故直接关闭。
 					undefined,  // invertY
-					undefined,  // samplingMode
+					Constants.TEXTURE_BILINEAR_SAMPLINGMODE,  // 与 TileMaterial.updateSamplingMode 一致
 					succeed,
 					(_message?: string, _exception?: any) => {
 						if (this.debug > 0) {

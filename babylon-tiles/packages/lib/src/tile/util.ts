@@ -44,13 +44,16 @@ export function LODEvaluate(
 
 	const distRatio = tile.distRatio;
 
+	// LOD 阈值死区：CREATE 与 REMOVE 使用不同阈值（±10%），避免相机停在边界附近时
+	// CREATE↔REMOVE 反复切换（反复重建 + 重新下载子瓦片）。死区 [0.9, 1.1]。
+	// 基于 three-tile LODEvaluate，但将共用 threshold 拆分为两档。
+
 	// 叶子瓦片、在视锥体内、距离比例小于阈值、且在显示或小于最小层级 → 创建子瓦片
-	// 与 three-tile LODEvaluate 完全一致
 	if (
 		tile.isLeaf &&
 		tile.inFrustum &&
 		tile.z < maxLevel &&
-		distRatio < threshold &&
+		distRatio < threshold * 0.9 &&
 		(tile.showing || tile.z <= minLevel)
 	) {
 		return LODAction.CREATE;
@@ -60,7 +63,7 @@ export function LODEvaluate(
 	if (
 		!tile.isLeaf &&
 		tile.z >= minLevel &&
-		distRatio > threshold
+		distRatio > threshold * 1.1
 	) {
 		return LODAction.REMOVE;
 	}

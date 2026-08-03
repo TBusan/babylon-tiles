@@ -9,6 +9,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { Constants } from '@babylonjs/core/Engines/constants';
 
 /**
  * 瓦片材质选项
@@ -79,8 +80,14 @@ export class TileMaterial {
 		// 设置漫反射纹理
 		if (diffuseTexture) {
 			material.diffuseTexture = diffuseTexture;
-			// 优化纹理设置
-			diffuseTexture.updateSamplingMode(2); // TRILINEAR sampling
+			// 瓦片纹理边缘必须 CLAMP：默认 REPEAT 会让 UV=0/1 处的双线性采样
+			// 取到同一张瓦片对侧边缘的纹素，在每块瓦片边界混入错误颜色，形成
+			// 明显接缝（three-tile 用 ClampToEdgeWrapping，此处移植时漏掉了）。
+			diffuseTexture.wrapU = Constants.TEXTURE_CLAMP_ADDRESSMODE;
+			diffuseTexture.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE;
+			// 双线性过滤（LINEAR_LINEAR，无 mipmap）：避免 mipmap 在不同瓦片
+			// 层级不一致时在边界产生亮度差异。
+			diffuseTexture.updateSamplingMode(Constants.TEXTURE_BILINEAR_SAMPLINGMODE);
 		} else if (diffuseColor) {
 			material.diffuseColor = diffuseColor;
 		} else {
@@ -91,6 +98,8 @@ export class TileMaterial {
 		if (normalTexture) {
 			material.bumpTexture = normalTexture;
 			material.bumpTexture.level = 1; // 法线强度
+			normalTexture.wrapU = Constants.TEXTURE_CLAMP_ADDRESSMODE;
+			normalTexture.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE;
 		}
 
 		// 设置环境色（默认无自发光）
@@ -150,7 +159,11 @@ export class TileMaterial {
 		// 设置漫反射纹理/颜色
 		if (diffuseTexture) {
 			material.albedoTexture = diffuseTexture;
-			diffuseTexture.updateSamplingMode(2); // TRILINEAR sampling
+			// 同 createTileMaterial：瓦片纹理边缘必须 CLAMP，否则双线性采样
+			// 在 UV=0/1 处混入同瓦片对侧边缘纹素，产生明显接缝。
+			diffuseTexture.wrapU = Constants.TEXTURE_CLAMP_ADDRESSMODE;
+			diffuseTexture.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE;
+			diffuseTexture.updateSamplingMode(Constants.TEXTURE_BILINEAR_SAMPLINGMODE);
 		} else if (diffuseColor) {
 			material.albedoColor = diffuseColor;
 		} else {
@@ -160,6 +173,8 @@ export class TileMaterial {
 		// 设置法线纹理
 		if (normalTexture) {
 			material.bumpTexture = normalTexture;
+			normalTexture.wrapU = Constants.TEXTURE_CLAMP_ADDRESSMODE;
+			normalTexture.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE;
 		}
 
 		// 设置环境色

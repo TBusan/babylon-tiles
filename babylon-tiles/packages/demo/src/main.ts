@@ -104,8 +104,12 @@ const createScene = async (): Promise<Scene> => {
 		console.log('Map ready!!!!!!');
 	});
 
+	// 每个瓦片加载都输出会刷屏（高缩放时数百行），仅在调试时打开
+	const DEBUG_TILE_LOG = false;
 	map.addObservable('tile-loaded', ({ tile }) => {
-		console.log(`Tile loaded: ${tile.x}, ${tile.y}, ${tile.z}`);
+		if (DEBUG_TILE_LOG) {
+			console.log(`Tile loaded: ${tile.x}, ${tile.y}, ${tile.z}`);
+		}
 	});
 
 	// Expose for debugging

@@ -398,8 +398,19 @@ export class Tile extends BabylonTransformNode {
 		// LOD
 		this.LOD(params);
 
-		// 递归更新子瓦片
-		this._subTiles?.forEach(child => child.update(params));
+		// 递归更新子瓦片：先遍历视锥体内的子瓦片，再遍历视锥体外的。
+		// 下载槽位（maxThreads）按遍历顺序发放，可见瓦片优先获得槽位，
+		// 平移/缩放时当前视野先清晰，屏幕外预加载次之。两遍遍历避免分配数组。
+		this._subTiles?.forEach(child => {
+			if (child.inFrustum) {
+				child.update(params);
+			}
+		});
+		this._subTiles?.forEach(child => {
+			if (!child.inFrustum) {
+				child.update(params);
+			}
+		});
 	}
 
 	/**

@@ -179,8 +179,13 @@ export class GDSource extends TileSource {
 	/** URL 子域名 */
 	public subdomains: string | string[] = '1234';
 
-	/** 默认 URL 模板 */
-	public url: string = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
+	/**
+	 * URL 模板（{host}/{gdstyle} 由 getUrl 按 style 注入）：
+	 *  - img/ter → 卫星影像服务 webst0X…style=6（z≤2 即有全球影像）
+	 *  - cva     → 路网服务 webrd0X…style=8
+	 * 高德路网/矢量服务在低层级（z≤2）返回 179 字节纯白空白瓦片，只有卫星服务有低层级影像。
+	 */
+	public url: string = 'https://{host}0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style={gdstyle}&x={x}&y={y}&z={z}';
 
 	/**
 	 * 构造函数
@@ -190,10 +195,30 @@ export class GDSource extends TileSource {
 		super(options);
 		this.style = options.style || 'img';
 		this.subdomains = options.subdomains || '1234';
+		// 卫星影像覆盖全球（含南极洲，z≤2 即有影像），声明 lat ±90 全范围，
+		// 避免南部瓦片（z=2 的 y=3 行，lat -45..-90）触发 _clipTexture 的边界
+		// 裁剪：原默认 bounds [-85,85] 会让这些瓦片走 Canvas 重编码 → data: 纹理
+		// + 透明材质，既多一次图像解码又改变渲染管线。路网（cva）在南极高纬
+		// 无数据，保持原有 ±85 裁剪行为。
+		this.bounds = options.bounds || (
+			this.style === 'cva' ? [-180, -85, 180, 85] : [-180, -90, 180, 90]
+		);
+	}
 
-		if (!options.url) {
-			this.url = 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
-		}
+	/**
+	 * 按 style 选择高德瓦片服务（修复原实现忽略 style、始终用路网 style=8 的问题）
+	 * @param x - 瓦片 X 坐标
+	 * @param y - 瓦片 Y 坐标
+	 * @param z - 瓦片层级
+	 * @returns 完整的瓦片 URL
+	 */
+	public override getUrl(x: number, y: number, z: number): string {
+		// 高德无独立地形瓦片，ter 回退到卫星影像
+		const satellite = this.style === 'img' || this.style === 'ter';
+		return super.getUrl(x, y, z, {
+			host: satellite ? 'webst' : 'webrd',
+			gdstyle: satellite ? 6 : 8,
+		});
 	}
 }
 
