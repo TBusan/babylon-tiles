@@ -11,7 +11,7 @@
  */
 
 import type { Scene } from '@babylonjs/core/scene';
-import { TileGeometry } from '../geometry/TileGeometry.js';
+import { TileGeometry, getBoundarySkirtEdges } from '../geometry/TileGeometry.js';
 import { resolveMartiniMaxError } from '../geometry/terrainError.js';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 // vite 构建时把 lerc 的 wasm 拷贝到产物目录并返回 URL；
@@ -112,6 +112,8 @@ export class LercTerrainLoader {
 	 *
 	 * @param buffer LERC 编码的二进制数据
 	 * @param z 瓦片层级（请求/显示层级，用于确定 Martini 误差阈值）
+	 * @param x 瓦片列坐标（slippy；用于边界裙边判定与网格命名）
+	 * @param y 瓦片行坐标（slippy，y=0 为北）
 	 * @param clipBounds 裁剪范围 [minX, minY, maxX, maxY]（0-1 归一化，minY 为北）
 	 * @param scene Babylon.js 场景
 	 * @param heightScale 高程缩放因子（米 → 局部坐标）
@@ -123,6 +125,8 @@ export class LercTerrainLoader {
 	public static createTerrainMesh(
 		buffer: ArrayBuffer,
 		z: number,
+		x: number,
+		y: number,
 		clipBounds: [number, number, number, number],
 		scene: Scene,
 		heightScale: number = 1,
@@ -156,13 +160,14 @@ export class LercTerrainLoader {
 		const maxError = resolveMartiniMaxError(z, worldScale, refError, { gridSize });
 
 		return TileGeometry.createMartiniTile(
-			`lerc-terrain-z${z}`,
+			`lerc-terrain-z${z}-${x}-${y}`,
 			scene,
 			terrain,
 			maxError,
 			skirtHeight,
 			heightScale,
-			worldScale
+			worldScale,
+			getBoundarySkirtEdges(x, y, z)
 		);
 	}
 

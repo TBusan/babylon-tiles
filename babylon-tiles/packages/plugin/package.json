@@ -1,5 +1,5 @@
 {
-	"name": "@babylon-tile/lib",
+	"name": "@babylon-tile/plugin",
 	"version": "1.0.0",
 	"type": "module",
 	"files": [
@@ -15,7 +15,7 @@
 			"types": "./dist/index.d.ts"
 		}
 	},
-	"description": "A lightweight tile map using Babylon.js",
+	"description": "A lightweight tile map using Babylon.js - plugins",
 	"license": "MIT",
 	"author": {
 		"name": "Babylon-Tile Team",
@@ -38,22 +38,16 @@
 		"registry": "https://registry.npmjs.org/",
 		"access": "public"
 	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/your-repo/babylon-tile.git"
-	},
-	"bugs": {
-		"url": "https://github.com/your-repo/babylon-tile/issues"
-	},
-	"homepage": "https://github.com/your-repo/babylon-tile#readme",
 	"dependencies": {
 		"@babylonjs/core": "^7.8.1",
-		"@babylonjs/loaders": "^7.8.1",
-		"lerc": "^4.2.0",
+		"@babylon-tile/lib": "workspace:*",
 		"@mapbox/vector-tile": "^2.0.3",
-		"pbf": "^4.0.1"
+		"geojson-vt": "^4.0.2",
+		"pbf": "^4.0.1",
+		"utif": "^3.1.0"
 	},
 	"devDependencies": {
+		"@types/geojson-vt": "^3.2.5",
 		"@types/node": "^20.11.5",
 		"typescript": "^5.3.3",
 		"vite": "^5.0.12",

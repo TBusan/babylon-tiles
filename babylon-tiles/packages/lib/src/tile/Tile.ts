@@ -168,6 +168,19 @@ export class Tile extends BabylonTransformNode {
 		// 所有瓦片会塌缩到原点附近并互相重叠（同时整屏过度绘制导致帧率崩到 1）。
 		localMatrix.multiplyToRef(parentWorld, this._worldMatrix);
 
+		// 手动拼接分支跳过 super.computeWorldMatrix，Babylon transformNode.js 里的
+		// _nonUniformScaling 传播（scaling 非均匀 → true / 继承父节点）不执行。
+		// 瓦片缩放恒非均匀（root (mapWidth,1,mapHeight)、子 (0.5,1,0.5)），世界矩阵恒
+		// diag(Sx,1,Sz)。若不同步，子瓦片 _nonUniformScaling 恒 false → 地形子 mesh 的
+		// NONUNIFORMSCALING define 关闭 → 着色器用 mat3(finalWorld) 而非 inverse-transpose
+		// 变换倾斜局部空间法线 → 法线被非均匀缩放压成水平 → 地形无起伏明暗（看起来平坦）。
+		if (!this.ignoreNonUniformScaling) {
+			const parentNUS = this.parent ? (this.parent as BabylonTransformNode).nonUniformScaling : false;
+			this._updateNonUniformScalingState(
+				this.scaling.isNonUniformWithinEpsilon(0.000001) || parentNUS
+			);
+		}
+
 		// 递归使子节点失效：直接遍历子瓦片 + 模型，避免 getChildTransformNodes()
 		// 每帧为每个瓦片分配新数组（高缩放级别下成千上万个瓦片时这是大量 GC 压力）。
 		if (this._subTiles) {
@@ -346,8 +359,12 @@ export class Tile extends BabylonTransformNode {
 			return false;
 		}
 
-		// 先更新子瓦片再更新父瓦片
-		return !this._subTiles?.some(tile => tile._tileIsDirty);
+		// 先更新子瓦片再更新父瓦片：仅等待「本次会被重载」的脏子瓦片（视锥体内）。
+		// 视锥体外的脏子瓦片本次不会重载（上方 _inFrustum 判断拒绝），若在此阻塞父瓦片
+		// 将形成死锁：父瓦片（视锥内）永久等待一个不会被更新的子瓦片（视锥外）。
+		// 该场景在视图切换（reload(false) 整树标脏）时必然出现，表现为切换后部分
+		// 视锥内瓦片残留上一视图的材质。
+		return !this._subTiles?.some(tile => tile._tileIsDirty && tile._inFrustum);
 	}
 
 	/**

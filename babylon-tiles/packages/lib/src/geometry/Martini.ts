@@ -189,6 +189,16 @@ export class MartiniTile {
 		const max = size - 1;
 		let aIndex: number, bIndex: number, cIndex: number;
 
+		// 边界线（网格四边）上的三角形强制细分到底，使瓦片边界达到满分辨率。
+		// 相邻瓦片共享边上的网格点物理重合、高程一致（同一 DEM 插值），两侧边界
+		// 顶点集因此严格一致 → 无裂缝/台阶。通过"接触边界即细分"而非修改误差图
+		// 实现，避免误差沿父三角形向上传播导致整个瓦片细分（顶点爆炸）。
+		const touchesBoundary = (
+			ax: number, ay: number, bx: number, by: number, cx: number, cy: number
+		): boolean =>
+			ax === 0 || bx === 0 || cx === 0 || ax === max || bx === max || cx === max ||
+			ay === 0 || by === 0 || cy === 0 || ay === max || by === max || cy === max;
+
 		indices.fill(0);
 
 		// 第一阶段：遍历误差图，标记使用的顶点并计数三角形
@@ -196,7 +206,10 @@ export class MartiniTile {
 			const mx = (ax + bx) >> 1;
 			const my = (ay + by) >> 1;
 
-			if (Math.abs(ax - cx) + Math.abs(ay - cy) > 1 && errors[my * size + mx] > maxError) {
+			if (
+				Math.abs(ax - cx) + Math.abs(ay - cy) > 1 &&
+				(touchesBoundary(ax, ay, bx, by, cx, cy) || errors[my * size + mx] > maxError)
+			) {
 				countElements(cx, cy, ax, ay, mx, my);
 				countElements(bx, by, cx, cy, mx, my);
 			} else {
@@ -227,7 +240,10 @@ export class MartiniTile {
 			const mx = (ax + bx) >> 1;
 			const my = (ay + by) >> 1;
 
-			if (Math.abs(ax - cx) + Math.abs(ay - cy) > 1 && errors[my * size + mx] > maxError) {
+			if (
+				Math.abs(ax - cx) + Math.abs(ay - cy) > 1 &&
+				(touchesBoundary(ax, ay, bx, by, cx, cy) || errors[my * size + mx] > maxError)
+			) {
 				processTriangle(cx, cy, ax, ay, mx, my);
 				processTriangle(bx, by, cx, cy, mx, my);
 			} else {

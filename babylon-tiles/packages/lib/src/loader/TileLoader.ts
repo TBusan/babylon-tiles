@@ -9,20 +9,14 @@ import type { Material } from '@babylonjs/core/Materials/material';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
-import { Texture } from '@babylonjs/core/Materials/Textures/texture';
-import { Constants } from '@babylonjs/core/Engines/constants';
 
 import type { ITileLoader, TileLoadParams } from './ITileLoader.js';
 import type { IProjection } from '../projection/IProjection.js';
 import type { ISource } from '../source/ISource.js';
 import { TileGeometry } from '../geometry/TileGeometry.js';
-import { resolveMartiniMaxError } from '../geometry/terrainError.js';
 import { TileMaterial } from '../material/TileMaterial.js';
-import { TerrainRGBParser } from './TerrainRGBLoader.js';
-import { LercTerrainLoader } from './LercTerrainLoader.js';
-import { QuantizedMeshLoader, type QuantizedMeshTileData } from './QuantizedMeshLoader.js';
-import { TerrainWorkerPool } from './WorkerPool.js';
 import { TextureCache } from './TextureCache.js';
+import { loaderFactory } from './LoaderFactory.js';
 
 /**
  * 平瓦片边缘出血量（Mapbox tile overdraw）：四边各外扩 2 纹素（256px 瓦片）。
@@ -64,6 +58,10 @@ export class TileLoader implements ITileLoader {
 	constructor(scene: Scene, projection: IProjection) {
 		this._scene = scene;
 		this._projection = projection;
+
+		// 确保内置加载器（image/mvt/terrain-rgb/lerc/quantized-mesh）已注册。
+		// 幂等：用户先注册的同名 dataType 自定义 loader 不会被覆盖。
+		loaderFactory.ensureBuiltinLoaders();
 
 		// 创建错误材质
 		this._errorMaterial = new StandardMaterial('error-material', scene);
@@ -420,25 +418,11 @@ export class TileLoader implements ITileLoader {
 		mesh.dispose();
 	}
 
-	/** 地形瓦片分段数（默认 64，平衡精度与性能） */
-	public terrainSegments: number = 64;
-
-	/**
-	 * Martini 参考误差（米）—— 值越大三角形越少（性能高），值越小越精确。
-	 * 语义：z=refZoom（默认 14）处的最大允许误差。低层级瓦片误差会随瓦片尺寸
-	 * 指数放宽（按 resolveMartiniMaxError 公式），近处保持此精度。
-	 */
-	public martiniMaxError: number = 10;
-
-	/** 是否使用 Martini 自适应三角网（默认 true，需要 DEM 数据为 2^n+1 尺寸） */
-	public useMartini: boolean = true;
-
-	/** 是否使用 Worker 池解析地形数据（默认 true，避免阻塞主线程） */
-	public useWorkerParse: boolean = true;
-
 	/**
 	 * 加载几何体
-	 * 有 DEM 数据源时加载真实地形，否则创建平瓦片
+	 * 有 DEM 数据源时按 dataType 分发到几何体加载器（内置 terrain-rgb/lerc/
+	 * quantized-mesh + 插件），否则创建平瓦片。DEM 过滤（minLevel/bounds 相交）
+	 * 保留在此；超采样等细节在 loader 内部，行为与提炼前一致。
 	 * @param coords - 变换后的瓦片坐标
 	 * @returns Promise<Mesh> 瓦片Mesh
 	 */
@@ -451,132 +435,26 @@ export class TileLoader implements ITileLoader {
 	}): Promise<Mesh> {
 		try {
 			// 有地形数据源且层级 >= 最小层级且与数据源边界相交时加载地形；
-			// 层级超过 demSource.maxLevel 时做 DEM 超采样（裁父级 maxLevel 瓦片的子区域）
+			// 层级超过 demSource.maxLevel 时的超采样由内置 loader 内部处理
+			// （terrain-rgb/lerc 裁父级 maxLevel 瓦片子区域；quantized-mesh 由
+			// source 定位服务瓦片层级，不走 demZ/k/shift）。
 			if (
 				this._demSource &&
 				coords.z >= this._demSource.minLevel &&
 				this._intersectsBounds(this._demSource, coords.bounds)
 			) {
 				try {
-					// quantized-mesh（Cesium 地形）：服务网格与本地 3857 网格不同构，
-					// 由 source 定位覆盖本地瓦片的服务瓦片，再重采样本地规则网格。
-					// 不走下面的 demZ/k/shift 超采样（服务瓦片层级由 getTileCoordsForBounds 适配）。
-					if (this._demSource.dataType === 'quantized-mesh') {
-						return await this._loadQuantizedMeshGeometry(coords);
-					}
-
-					// DEM 超采样：z 超过 demSource.maxLevel 时，取父级 maxLevel 瓦片并裁剪
-					// 本瓦片的子区域，地形延续到更深层级，避免深缩放"突然变平"
-					const demZ = Math.min(coords.z, this._demSource.maxLevel);
-					const k = coords.z - demZ;
-					const shift = 1 << k; // k=0 时为 1（未超采样），URL 即本瓦片
-					const demX = Math.floor(coords.x / shift);
-					const demY = Math.floor(coords.y / shift);
-					const url = this._demSource.getUrl(demX, demY, demZ);
-					if (url) {
-						// LERC 二进制地形（ArcGIS / 天地图）：走独立解码管线，不经过图像解析
-						if (this._demSource.dataType === 'lerc') {
-							return await this._loadLercGeometry(coords, demX, demY, demZ, k, shift, url);
-						}
-
-						const imgData = await this._loadImageData(url);
-
-						// 使用 Worker 池或主线程解析地形数据
-						let dem = this.useWorkerParse
-							? await TerrainWorkerPool.parse(imgData)
-							: TerrainRGBParser.parse(imgData);
-
-						if (k > 0) {
-							dem = this._cropDemQuadrant(
-								dem,
-								k,
-								coords.x - demX * shift, // 本瓦片在父瓦片内的列象限（向东递增）
-								coords.y - demY * shift // 行象限（向南递增）
-							);
-						}
-						
-						// DEM 高程为原始米制（与 three-tile 一致），直接使用，无需缩放
-						const heightScale = 1;
-						const skirtHeight = 100; // 米制裙边高度
-
-						// 瓦片世界尺寸缩放系数 S = mapWidth / 2^z（米/瓦片单位）。
-						// 瓦片几何位于倾斜局部空间（X/Z 单位 1、Y 米制），而节点世界矩阵为
-						// diag(S,1,S)。计算法线时必须先在"S 倍"的世界尺寸空间做（否则
-						// X/Z 跨度 ~1/256 会把法线压成水平），并据此映射回局部空间存储。
-						const worldScale = this._projection.mapWidth / Math.pow(2, coords.z);
-
-						// 检查 DEM 数据是否为 2^n+1 尺寸（Martini 要求）
-						const gridSize = Math.floor(Math.sqrt(dem.length));
-						const isPerfectSquare = gridSize * gridSize === dem.length;
-						const isMartiniCompatible =
-							this.useMartini &&
-							isPerfectSquare &&
-							((gridSize - 1) & (gridSize - 2)) === 0; // 2^n+1 检测
-						
-						if (isMartiniCompatible) {
-							// 使用 Martini RTIN 自适应三角网
-							// maxError 按瓦片尺寸缩放：固定绝对米制误差会让低层级大瓦片
-							// 细化到满分辨率（单瓦片 6 万+ 顶点 → 帧率骤降）。用相对瓦片
-							// 尺寸的误差（cells 随 z 递减，远处放宽/近处收紧）控制顶点预算。
-							const maxError = resolveMartiniMaxError(
-								coords.z,
-								worldScale,
-								this.martiniMaxError,
-								{ gridSize }
-							);
-							return TileGeometry.createMartiniTile(
-								`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
-								this._scene,
-								dem,
-								maxError,
-								skirtHeight,
-								heightScale,
-								worldScale
-							);
-						}
-						
-						// 回退：DEM 非正方形时无法确定行距，降级为平瓦片（防御性兜底）
-						if (!isPerfectSquare) {
-							if (this.debug > 0) {
-								console.warn(`DEM data is not square (length=${dem.length}), fallback to flat tile.`);
-							}
-							return TileGeometry.createFlatTile(
-								`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
-								this._scene,
-								1,
-								1,
-								TILE_UV_BLEED
-							);
-						}
-
-						// 回退：使用固定分段网格
-						// DEM 为 gridSize×gridSize，第 0 行在北；几何网格 gy=0 在南 →
-						// 按 (segments+1)² 重采样并翻转行，与 createTile 的 heights 布局一致
-						const segments = this.terrainSegments;
-						const grid = segments + 1;
-						const heights = new Float32Array(grid * grid);
-						for (let gy = 0; gy < grid; gy++) {
-							for (let gx = 0; gx < grid; gx++) {
-								// 几何南边(gy=0) 对应 DEM 最后一行（北行翻转）
-								const demRow = Math.round(((segments - gy) * (gridSize - 1)) / segments);
-								const demCol = Math.round((gx * (gridSize - 1)) / segments);
-								heights[gy * grid + gx] = dem[demRow * gridSize + demCol] || 0;
-							}
-						}
-
-						return TileGeometry.createTile(
-							`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
-							{
-								scene: this._scene,
-								width: 1,
-								height: 1,
-								segmentsW: segments,
-								segmentsH: segments,
-								heights,
-								skirtHeight,
-								worldScale,
-							}
-						);
+					// 按 dataType 分发到几何体加载器（内置 + 插件一视同仁）
+					const loader = loaderFactory.getGeometryLoader(this._demSource.dataType);
+					const geometry = await loader.load({
+						...coords,
+						source: this._demSource,
+						scene: this._scene,
+						projection: this._projection,
+					});
+					// loader 返回 undefined（无 URL 等跳过）：回退平瓦片
+					if (geometry) {
+						return geometry;
 					}
 				} catch (error) {
 					if (this.debug > 0 && this._demFailWarned < 3) {
@@ -603,285 +481,6 @@ export class TileLoader implements ITileLoader {
 	}
 
 	/**
-	 * 加载 LERC 地形几何体（ArcGIS / 天地图）
-	 * 二进制 buffer → lerc 解码 → 子区域裁剪（超采样）→ Martini 网格。
-	 * @param coords - 变换后的瓦片坐标
-	 * @param demX - DEM 瓦片 X（超采样时为父级瓦片）
-	 * @param demY - DEM 瓦片 Y
-	 * @param demZ - DEM 瓦片层级
-	 * @param k - 超采样级差（本瓦片 z 与 DEM z 的差值）
-	 * @param shift - 2^k，父瓦片每边本瓦片数
-	 * @param url - DEM 瓦片 URL
-	 * @returns Promise<Mesh> 地形网格
-	 */
-	private async _loadLercGeometry(
-		coords: {
-			x: number;
-			y: number;
-			z: number;
-			bounds: [number, number, number, number];
-			lonLatBounds: [number, number, number, number];
-		},
-		demX: number,
-		demY: number,
-		demZ: number,
-		k: number,
-		shift: number,
-		url: string
-	): Promise<Mesh> {
-		// 动态加载 lerc 解码器（失败抛错，由 loadGeometry 外层 catch 回退平瓦片）
-		await LercTerrainLoader.ensureDecoder();
-		const buffer = await LercTerrainLoader.fetchBuffer(url);
-
-		// 本瓦片在父瓦片内的象限 → 归一化裁剪范围 [minX, minY, maxX, maxY]
-		// （minY 为北，与 DEM 第 0 行在北一致；k=0 未超采样则全范围）
-		const subX = coords.x - demX * shift;
-		const subY = coords.y - demY * shift;
-		const clipBounds: [number, number, number, number] = k > 0
-			? [subX / shift, subY / shift, (subX + 1) / shift, (subY + 1) / shift]
-			: [0, 0, 1, 1];
-
-		// DEM 高程为原始米制（与 terrain-rgb 一致），无需缩放
-		const heightScale = 1;
-		const skirtHeight = 100; // 米制裙边高度
-
-		// 瓦片世界尺寸缩放系数 S = mapWidth / 2^z（米/瓦片单位），用于世界尺寸空间算法线
-		const worldScale = this._projection.mapWidth / Math.pow(2, coords.z);
-
-		return LercTerrainLoader.createTerrainMesh(
-			buffer,
-			coords.z,
-			clipBounds,
-			this._scene,
-			heightScale,
-			skirtHeight,
-			worldScale,
-			this.martiniMaxError
-		);
-	}
-
-	/**
-	 * 加载 quantized-mesh 地形几何体（Cesium 地形）
-	 * 服务瓦片 TIN 解码 → 本地瓦片 mercator 均匀规则网格重采样 → Martini 网格。
-	 *
-	 * 相邻本地瓦片共享边上的网格点（同经度 + 同 mercator 纬度线，因共享边
-	 * 物理位置重合）经同一服务瓦片插值 → 高程一致 → 无裂缝；UV 由 Martini
-	 * 按网格归一化生成（v=0 在南），与影像瓦片对齐。
-	 *
-	 * @param coords - 变换后的瓦片坐标
-	 * @returns Promise<Mesh> 地形网格
-	 */
-	private async _loadQuantizedMeshGeometry(coords: {
-		x: number;
-		y: number;
-		z: number;
-		bounds: [number, number, number, number];
-		lonLatBounds: [number, number, number, number];
-	}): Promise<Mesh> {
-		const source = this._demSource as ISource & {
-			getTileCoordsForBounds(
-				lonLatBounds: [number, number, number, number],
-				x: number,
-				y: number,
-				z: number
-			): {
-				x: number;
-				y: number;
-				z: number;
-				lonLatBounds: [number, number, number, number];
-			}[];
-			getRequestHeaders?: () => Record<string, string>;
-			littleEndian?: boolean;
-		};
-
-		// 1. 定位覆盖本地瓦片的所有服务瓦片（4326 等经纬度网格通常多块覆盖）
-		const coordsList = source.getTileCoordsForBounds(coords.lonLatBounds, coords.x, coords.y, coords.z);
-		if (!coordsList.length) {
-			throw new Error('No quantized-mesh tiles cover the local tile');
-		}
-
-		// 2. 请求并解码所有服务瓦片 TIN，合并为一个 TIN
-		// 请求头由 source 提供（外部配置的 Accept 协商头 + Cesium ion 认证头等）
-		const requestHeaders = source.getRequestHeaders?.();
-		const requestInit =
-			requestHeaders && Object.keys(requestHeaders).length ? { headers: requestHeaders } : undefined;
-		// 字节序由 source 显式指定（Mars3D 等服务为小端），不做自动检测
-		const littleEndian = source.littleEndian ?? false;
-
-		const lonArr: number[] = [];
-		const latArr: number[] = [];
-		const heightArr: number[] = [];
-		const triArr: number[] = [];
-		let lonMin = Infinity, lonMax = -Infinity, latMin = Infinity, latMax = -Infinity;
-
-		for (const c of coordsList) {
-			const response = await fetch(source.getUrl(c.x, c.y, c.z), requestInit);
-			if (!response.ok) {
-				// 单个服务瓦片失败不影响其余瓦片（仍可渲染局部）
-				if (this.debug > 0) {
-					console.warn(`quantized-mesh fetch failed: ${response.status} ${c.x}/${c.y}/${c.z}`);
-				}
-				continue;
-			}
-			const tin = QuantizedMeshLoader.decode(await response.arrayBuffer(), c.lonLatBounds, littleEndian);
-			// 合并顶点（相邻服务瓦片共享边顶点经纬度一致 → 插值无缝）
-			const vBase = lonArr.length;
-			for (let i = 0; i < tin.lon.length; i++) {
-				lonArr.push(tin.lon[i]);
-				latArr.push(tin.lat[i]);
-				heightArr.push(tin.height[i]);
-			}
-			for (let i = 0; i < tin.triangles.length; i++) {
-				triArr.push(tin.triangles[i] + vBase);
-			}
-			if (tin.lonMin < lonMin) lonMin = tin.lonMin;
-			if (tin.lonMax > lonMax) lonMax = tin.lonMax;
-			if (tin.latMin < latMin) latMin = tin.latMin;
-			if (tin.latMax > latMax) latMax = tin.latMax;
-		}
-		if (lonArr.length === 0) {
-			throw new Error('All quantized-mesh tiles failed to load');
-		}
-
-		const tin: QuantizedMeshTileData = {
-			lon: Float32Array.from(lonArr),
-			lat: Float32Array.from(latArr),
-			height: Float32Array.from(heightArr),
-			triangles: Uint32Array.from(triArr),
-			bounds: coords.lonLatBounds,
-			lonMin,
-			lonMax,
-			latMin,
-			latMax,
-		};
-
-		// 3. 本地瓦片 mercator 均匀规则网格（2^6+1=65，Martini 兼容）。
-		//    网格点经度在瓦片内线性（3857 经度投影线性），纬度方向在 mercator y 上
-		//    均匀；通过投影 unProject 从世界坐标反算经纬度，保证与服务 TIN 同一
-		//    经纬度参考。相邻瓦片共享边网格点物理重合 → 插值高程一致 → 无裂缝。
-		const gridSize = 65;
-		const dem = new Float32Array(gridSize * gridSize);
-		const buckets = QuantizedMeshLoader.buildBuckets(tin);
-
-		const [minX, minY, maxX, maxY] = coords.bounds;
-		const worldScale = this._projection.mapWidth / Math.pow(2, coords.z);
-		const centerX = (minX + maxX) * 0.5;
-		const centerZ = (minY + maxY) * 0.5;
-
-		for (let row = 0; row < gridSize; row++) {
-			// DEM 第 0 行在北（Martini 约定）：row=0 → localZ=+0.5（北），row=N-1 → 南
-			const localZ = 0.5 - row / (gridSize - 1);
-			const wy = centerZ + localZ * worldScale;
-			const rowBase = row * gridSize;
-			for (let col = 0; col < gridSize; col++) {
-				const localX = col / (gridSize - 1) - 0.5;
-				const wx = centerX + localX * worldScale;
-				const p = this._projection.unProject(wx, wy);
-				dem[rowBase + col] = QuantizedMeshLoader.interpolate(tin, p.lon, p.lat, buckets);
-			}
-		}
-
-		// 4. Martini 自适应三角网（法线/裙边/误差缩放与 terrain-rgb 统一）
-		const heightScale = 1;
-		const skirtHeight = 100; // 米制裙边高度
-		const maxError = resolveMartiniMaxError(coords.z, worldScale, this.martiniMaxError, { gridSize });
-
-		return TileGeometry.createMartiniTile(
-			`tile-${coords.z}-${coords.x}-${coords.y}-geometry`,
-			this._scene,
-			dem,
-			maxError,
-			skirtHeight,
-			heightScale,
-			worldScale
-		);
-	}
-
-	/**
-	 * 加载图像像素数据（用于 DEM 解析）
-	 * @param url - 图像 URL
-	 * @returns Promise<Uint8ClampedArray> RGBA 像素数据
-	 */
-	private _loadImageData(url: string): Promise<Uint8ClampedArray> {
-		return new Promise((resolve, reject) => {
-			const img = new Image();
-			img.crossOrigin = 'anonymous';
-			let settled = false;
-			const settle = (fn: () => void) => {
-				if (!settled) {
-					settled = true;
-					clearTimeout(timeout);
-					fn();
-				}
-			};
-
-			// 安全超时：DEM 图片挂起时若无限等待，load() 的下载槽位会永久泄漏，
-			// 10 个槽位最终全部卡死（与 _loadImageElement 修复的同类问题）。
-			const timeout = setTimeout(() => {
-				if (this.debug > 0) {
-					console.warn(`DEM image load timeout for ${url}`);
-				}
-				// 中止挂起的下载
-				img.src = '';
-				settle(() => reject(new Error(`DEM image load timeout: ${url}`)));
-			}, 15000);
-
-			img.onload = () => {
-				try {
-					const canvas = document.createElement('canvas');
-					canvas.width = img.width;
-					canvas.height = img.height;
-					const ctx = canvas.getContext('2d');
-					if (!ctx) {
-						settle(() => reject(new Error('Failed to get 2D context')));
-						return;
-					}
-					ctx.drawImage(img, 0, 0);
-					const imgData = ctx.getImageData(0, 0, img.width, img.height);
-					settle(() => resolve(imgData.data));
-				} catch (e) {
-					settle(() => reject(e as Error));
-				}
-			};
-
-			img.onerror = () => {
-				settle(() => reject(new Error(`Failed to load DEM image: ${url}`)));
-			};
-
-			img.src = url;
-		});
-	}
-
-	/**
-	 * 从父级 DEM 网格裁剪出子瓦片的子区域（DEM 超采样）
-	 * @param dem - 父级 DEM 高程数组（第 0 行在北）
-	 * @param k - 超采样级差（本瓦片 z 与父级 z 的差值）
-	 * @param subX - 本瓦片在父瓦片内的列象限（0..2^k-1，向东递增）
-	 * @param subY - 本瓦片在父瓦片内的行象限（0..2^k-1，向南递增）
-	 * @returns 裁剪后的高程数组（子网格尺寸恒为 2^n+1，Martini 兼容）
-	 */
-	private _cropDemQuadrant(dem: Float32Array, k: number, subX: number, subY: number): Float32Array {
-		const parentSize = Math.floor(Math.sqrt(dem.length));
-		const div = Math.pow(2, k);
-		// 子网格在父网格中的行/列范围（两端均含）；subY 向南递增，而 DEM 第 0 行在北，
-		// 故从父级 row0 起按序连续截取即可保持"行 0 在北"约定，Martini 内部翻转不变。
-		const col0 = Math.round((subX * (parentSize - 1)) / div);
-		const col1 = Math.round(((subX + 1) * (parentSize - 1)) / div);
-		const row0 = Math.round((subY * (parentSize - 1)) / div);
-		const row1 = Math.round(((subY + 1) * (parentSize - 1)) / div);
-		const cols = col1 - col0 + 1;
-		const rows = row1 - row0 + 1;
-		const out = new Float32Array(cols * rows);
-		for (let r = 0; r < rows; r++) {
-			const srcRow = row0 + r;
-			for (let c = 0; c < cols; c++) {
-				out[r * cols + c] = dem[srcRow * parentSize + col0 + c];
-			}
-		}
-		return out;
-	}
-
-	/**
 	 * 加载材质
 	 * 与 three-tile 行为一致：阻塞等待纹理下载完成后再返回材质。
 	 * 支持超级别回退加载：当请求级别 > 数据源 maxLevel 时，从最大级别瓦片截取子区域。
@@ -905,52 +504,21 @@ export class TileLoader implements ITileLoader {
 				this._intersectsBounds(source, coords.bounds)
 		);
 
-		// 加载每个数据源的材质
+		// 加载每个数据源的材质：按 dataType 分发到材质加载器（内置 image/mvt + 插件）。
+		// 超级别回退/纹理缓存/边界裁剪等细节在 loader 内部，行为与提炼前一致。
 		for (const source of sources) {
 			try {
-				// 获取安全的瓦片 URL 和裁剪范围（处理超级别回退）
-				const { url, clipBounds } = this._getSafeTileUrlAndBounds(
-					source, coords.x, coords.y, coords.z
-				);
-
-				if (!url) {
-					continue;
-				}
-
-				// 阻塞等待纹理下载完成（下载槽位已在 load() 入口统一预留）
-				let texture = await this._loadTexture(url, coords);
-
-				// 加载失败/超时（返回 undefined）：跳过该影像源，回退背景材质
-				if (!texture) {
-					continue;
-				}
-
-				// 如果需要裁剪（超级别回退或边界裁剪）
-				const needsClip = clipBounds[0] !== 0 || clipBounds[1] !== 0 ||
-					clipBounds[2] !== 1 || clipBounds[3] !== 1;
-				const needsBoundsClip = this._needsBoundsClip(source, coords.bounds);
-
-				if (needsClip || needsBoundsClip) {
-					const clipped = await this._clipTexture(
-						texture, url, clipBounds, source, coords.bounds
-					);
-					// 裁剪产物替换源纹理：本瓦片不再持有源纹理，交还缓存供其他瓦片复用
-					if (clipped !== texture) {
-						TextureCache.release(texture);
-						texture = clipped;
-					}
-				}
-
-				// 创建材质
-				const material = TileMaterial.createTileMaterial({
+				const loader = loaderFactory.getMaterialLoader(source.dataType);
+				const material = await loader.load({
+					...coords,
+					source,
 					scene: this._scene,
-					name: `tile-${coords.z}-${coords.x}-${coords.y}-material`,
-					diffuseTexture: texture,
-					opacity: source.opacity ?? 1,
-					transparent: source.transparent ?? (needsClip || needsBoundsClip),
+					projection: this._projection,
 				});
-
-				materials.push(material);
+				// loader 返回 undefined（URL 缺失/纹理加载失败/层级不符）：静默跳过该源
+				if (material) {
+					materials.push(material);
+				}
 			} catch (error) {
 				if (this.debug > 0) {
 					console.error('Load Material Error:', error);
@@ -959,262 +527,6 @@ export class TileLoader implements ITileLoader {
 		}
 
 		return materials;
-	}
-
-	/**
-	 * 获取安全的瓦片 URL 和裁剪范围
-	 * 当请求级别 > 数据源 maxLevel 时，回退到最大级别瓦片并计算子区域裁剪坐标
-	 * @param source - 数据源
-	 * @param x - 瓦片 X 坐标
-	 * @param y - 瓦片 Y 坐标
-	 * @param z - 瓦片层级
-	 * @returns url 和 clipBounds [0-1 范围的裁剪区域]
-	 */
-	private _getSafeTileUrlAndBounds(
-		source: ISource,
-		x: number,
-		y: number,
-		z: number
-	): { url: string | undefined; clipBounds: [number, number, number, number] } {
-		// 请求级别 < 最小级别，返回空
-		if (z < source.minLevel) {
-			return { url: undefined, clipBounds: [0, 0, 1, 1] };
-		}
-
-		// 请求级别 <= 最大级别，正常加载
-		if (z <= source.maxLevel) {
-			return { url: source.getUrl(x, y, z), clipBounds: [0, 0, 1, 1] };
-		}
-
-		// 超级别回退：从最大级别瓦片中截取子区域
-		const dl = z - source.maxLevel;
-		const parentX = x >> dl;
-		const parentY = y >> dl;
-		const parentZ = z - dl;
-		const url = source.getUrl(parentX, parentY, parentZ);
-
-		// 计算当前瓦片在父级瓦片中的相对位置（0-1 范围）
-		const sep = Math.pow(2, dl);
-		const size = 1 / sep;
-		const offsetX = (x % sep) * size;
-		const offsetY = (y % sep) * size;
-		const clipBounds: [number, number, number, number] = [
-			offsetX, offsetY,
-			offsetX + size, offsetY + size
-		];
-
-		return { url, clipBounds };
-	}
-
-	/**
-	 * 检查瓦片是否需要边界裁剪（部分超出数据源 bounds）
-	 */
-	private _needsBoundsClip(
-		source: ISource,
-		tileBounds: [number, number, number, number]
-	): boolean {
-		if (!source._projectionBounds) return false;
-		const mb = source._projectionBounds;
-		// 瓦片完全在数据源范围内，无需裁剪
-		return !(
-			mb[0] <= tileBounds[0] &&
-			mb[1] <= tileBounds[1] &&
-			mb[2] >= tileBounds[2] &&
-			mb[3] >= tileBounds[3]
-		);
-	}
-
-	/**
-	 * 裁剪纹理：支持超级别子区域截取 + 数据源边界裁剪
-	 * 通过 Canvas 2D 操作实现图像裁剪
-	 */
-	private async _clipTexture(
-		texture: Texture,
-		url: string,
-		clipBounds: [number, number, number, number],
-		source: ISource,
-		tileBounds: [number, number, number, number]
-	): Promise<Texture> {
-		try {
-			// 加载原始图像
-			const image = await this._loadImageElement(url);
-			const size = image.width;
-
-			// 创建 Canvas 进行裁剪
-			const canvas = document.createElement('canvas');
-			canvas.width = size;
-			canvas.height = size;
-			const ctx = canvas.getContext('2d');
-			if (!ctx) return texture;
-
-			// 超级别裁剪：从父瓦片中截取子区域
-			const needsSubClip = clipBounds[0] !== 0 || clipBounds[1] !== 0 ||
-				clipBounds[2] !== 1 || clipBounds[3] !== 1;
-
-			if (needsSubClip) {
-				const sx = Math.floor(clipBounds[0] * size);
-				const sy = Math.floor(clipBounds[1] * size);
-				const sw = Math.floor((clipBounds[2] - clipBounds[0]) * size);
-				const sh = Math.floor((clipBounds[3] - clipBounds[1]) * size);
-				ctx.drawImage(image, sx, sy, sw, sh, 0, 0, size, size);
-			} else {
-				ctx.drawImage(image, 0, 0);
-			}
-
-			// 数据源边界裁剪：将超出部分设为透明
-			if (this._needsBoundsClip(source, tileBounds) && source._projectionBounds) {
-				const mb = source._projectionBounds;
-				const [tileMinX, tileMinY, tileMaxX, tileMaxY] = tileBounds;
-
-				// 计算交集
-				const intersectMinX = Math.max(tileMinX, mb[0]);
-				const intersectMaxX = Math.min(tileMaxX, mb[2]);
-				const intersectMinY = Math.max(tileMinY, mb[1]);
-				const intersectMaxY = Math.min(tileMaxY, mb[3]);
-
-				if (intersectMinX < intersectMaxX && intersectMinY < intersectMaxY) {
-					const tileW = tileMaxX - tileMinX;
-					const tileH = tileMaxY - tileMinY;
-
-					// 转换为像素坐标
-					const x1 = ((intersectMinX - tileMinX) / tileW) * size;
-					const x2 = ((intersectMaxX - tileMinX) / tileW) * size;
-					// Y 轴翻转（图像坐标 Y 向下，投影坐标 Y 向上）
-					const y1 = size - ((intersectMaxY - tileMinY) / tileH) * size;
-					const y2 = size - ((intersectMinY - tileMinY) / tileH) * size;
-
-					// 使用 destination-in 保留交集区域
-					ctx.globalCompositeOperation = 'destination-in';
-					ctx.beginPath();
-					ctx.rect(x1, y1, x2 - x1, y2 - y1);
-					ctx.fill();
-				}
-			}
-
-			// 从 Canvas 创建新纹理
-			const clippedTexture = new Texture(null, this._scene);
-			clippedTexture.updateURL(canvas.toDataURL());
-
-			// 原始纹理由 TextureCache 持有，供其他瓦片复用，不在此处释放
-			// （裁剪产物是独立纹理，随瓦片卸载正常 dispose）。
-
-			return clippedTexture;
-		} catch (error) {
-			if (this.debug > 0) {
-				console.warn('Texture clip failed, using original:', error);
-			}
-			return texture;
-		}
-	}
-
-	/**
-	 * 加载图像元素（用于 Canvas 裁剪操作）
-	 * 带安全超时：网络不可达/挂起时若无限等待，load() 的下载槽位会永久泄漏，
-	 * 最终 10 个槽位全部被卡死，整个地图停止加载（表现为瓦片永远加载不完）。
-	 */
-	private _loadImageElement(url: string): Promise<HTMLImageElement> {
-		return new Promise((resolve, reject) => {
-			const img = new Image();
-			img.crossOrigin = 'anonymous';
-			let settled = false;
-			const settle = (fn: () => void) => {
-				if (!settled) {
-					settled = true;
-					clearTimeout(timeout);
-					fn();
-				}
-			};
-			const timeout = setTimeout(() => {
-				if (this.debug > 0) {
-					console.warn(`Image load timeout for ${url}`);
-				}
-				settle(() => reject(new Error(`Image load timeout: ${url}`)));
-			}, 15000);
-			img.onload = () => settle(() => resolve(img));
-			img.onerror = () => settle(() => reject(new Error(`Failed to load image: ${url}`)));
-			img.src = url;
-		});
-	}
-
-	/**
-	 * 加载纹理（Promise 包装，阻塞等待完成）
-	 * 使用 settled 标志确保只结算一次（超时/成功/失败仅其一）
-	 * 失败/超时时 resolve(undefined)：让该影像源被跳过，瓦片回退到背景材质，
-	 * 而不是用一张黑图并把瓦片标记为「已加载」（黑图会被 updateVisibility 当成
-	 * 子瓦片已加载，父瓦片因此不会填充间隙，留下空洞）。
-	 * @param url - 纹理 URL
-	 * @param coords - 瓦片坐标（用于调试）
-	 * @returns Promise<Texture | undefined>
-	 */
-	private _loadTexture(
-		url: string,
-		coords: { x: number; y: number; z: number }
-	): Promise<Texture | undefined> {
-		// 命中缓存：直接复用已上传 GPU 的纹理，跳过网络下载 + 解码 + 上传。
-		// 旋转/缩放 churn 时同一 URL 的瓦片反复进出视锥，缓存消除了加载风暴。
-		const cached = TextureCache.get(url);
-		if (cached) {
-			// 本瓦片开始持有该纹理（卸载时对应 release 一次）
-			TextureCache.retain(cached);
-			return Promise.resolve(cached);
-		}
-
-		return new Promise<Texture | undefined>((resolve) => {
-			let settled = false;
-			let texture: Texture | undefined;
-
-			const fail = () => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timeout);
-				// 释放半成品纹理（new Texture 已加入 scene.textures，不释放会泄漏）
-				if (texture) {
-					texture.dispose();
-				}
-				resolve(undefined);
-			};
-
-			const succeed = () => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timeout);
-				// 下载成功后入缓存（下次同 URL 瓦片直接复用），并记录本瓦片的持有
-				if (texture) {
-					TextureCache.put(url, texture);
-					TextureCache.retain(texture);
-				}
-				resolve(texture);
-			};
-
-			// 安全超时：防止纹理加载永不完成导致 _isLoading 卡死
-			const timeout = setTimeout(() => {
-				if (this.debug > 0) {
-					console.warn(`Texture load timeout for tile ${coords.z}-${coords.x}-${coords.y}`);
-				}
-				fail();
-			}, 15000);
-
-			try {
-				texture = new Texture(
-					url,
-					this._scene,
-					true,   // noMipmap：瓦片纹理使用双线性（无 mipmap）过滤（见 TileMaterial），
-					        // 生成 mipmap 金字塔只浪费显存与上传带宽，故直接关闭。
-					undefined,  // invertY
-					Constants.TEXTURE_BILINEAR_SAMPLINGMODE,  // 与 TileMaterial.updateSamplingMode 一致
-					succeed,
-					(_message?: string, _exception?: any) => {
-						if (this.debug > 0) {
-							console.error(`Texture load error for tile ${coords.z}-${coords.x}-${coords.y}:`, _message);
-						}
-						fail();
-					}
-				);
-			} catch (e) {
-				// Texture 构造函数抛出异常时仍然需要结算计数器
-				fail();
-			}
-		});
 	}
 
 	/**

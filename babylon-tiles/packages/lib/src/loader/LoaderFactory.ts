@@ -6,6 +6,15 @@
 
 import type { ISource } from '../source/ISource.js';
 import type { ITileGeometryLoader, ITileMaterialLoader } from './ITileLoaders.js';
+import {
+	ImageTileMaterialLoader,
+	MVTileMaterialLoader,
+} from './TileMaterialLoaders.js';
+import {
+	TerrainRGBGeometryLoader,
+	LercGeometryLoader,
+	QuantizedMeshGeometryLoader,
+} from './TileGeometryLoaders.js';
 
 const author = { name: 'Babylon-Tile Team' };
 
@@ -36,6 +45,33 @@ export class LoaderFactory {
 			LoaderFactory._instance = new LoaderFactory();
 		}
 		return LoaderFactory._instance;
+	}
+
+	/**
+	 * 确保内置加载器已注册（幂等）
+	 *
+	 * 核心底图能力（影像 image / 矢量底图 mvt / 地形 terrain-rgb / lerc / quantized-mesh）
+	 * 与插件 loader 走同一注册表。调用方（TileLoader 构造）保证开箱即用；
+	 * 用户若先注册了同名 dataType 的自定义 loader，则内置 loader 跳过，尊重覆盖。
+	 */
+	public ensureBuiltinLoaders(): void {
+		// 材质（影像/矢量底图）
+		if (!this._imgLoaderMap.has('image')) {
+			this.registerMaterialLoader(new ImageTileMaterialLoader());
+		}
+		if (!this._imgLoaderMap.has('mvt')) {
+			this.registerMaterialLoader(new MVTileMaterialLoader());
+		}
+		// 几何体（地形）
+		if (!this._demLoaderMap.has('terrain-rgb')) {
+			this.registerGeometryLoader(new TerrainRGBGeometryLoader());
+		}
+		if (!this._demLoaderMap.has('lerc')) {
+			this.registerGeometryLoader(new LercGeometryLoader());
+		}
+		if (!this._demLoaderMap.has('quantized-mesh')) {
+			this.registerGeometryLoader(new QuantizedMeshGeometryLoader());
+		}
 	}
 
 	/**
@@ -153,3 +189,48 @@ export class LoaderFactory {
  * 导出工厂实例的便捷方法
  */
 export const loaderFactory = LoaderFactory.getInstance();
+
+/**
+ * 便捷函数：注册影像加载器（委托 loaderFactory，对齐 three-tile tt.registerImgLoader）
+ * @param loader - 材质加载器实例
+ */
+export function registerImgLoader(loader: ITileMaterialLoader): void {
+	loaderFactory.registerMaterialLoader(loader);
+}
+
+/**
+ * 便捷函数：注册地形加载器（对齐 three-tile tt.registerDEMLoader）
+ * @param loader - 几何体加载器实例
+ */
+export function registerDEMLoader(loader: ITileGeometryLoader): void {
+	loaderFactory.registerGeometryLoader(loader);
+}
+
+/**
+ * 便捷函数：获取影像加载器（对齐 three-tile tt.getImgLoader）
+ * @param source - 数据源或数据类型字符串
+ * @returns 材质加载器实例
+ */
+export function getImgLoader(source: ISource | string): ITileMaterialLoader {
+	return loaderFactory.getMaterialLoader(source);
+}
+
+/**
+ * 便捷函数：获取地形加载器（对齐 three-tile tt.getDEMLoader）
+ * @param source - 数据源或数据类型字符串
+ * @returns 几何体加载器实例
+ */
+export function getDEMLoader(source: ISource | string): ITileGeometryLoader {
+	return loaderFactory.getGeometryLoader(source);
+}
+
+/**
+ * 便捷函数：获取所有已注册加载器（对齐 three-tile tt.getTileLoaders）
+ * @returns 含图像加载器和地形加载器的对象
+ */
+export function getTileLoaders(): {
+	imgLoaders: ITileMaterialLoader[];
+	demLoaders: ITileGeometryLoader[];
+} {
+	return loaderFactory.getAllLoaders();
+}

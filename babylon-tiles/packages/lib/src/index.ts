@@ -30,6 +30,9 @@ export * from './tile/FrustumEx.js';
 export * from './tile/Tile.js';
 export * from './tile/TileMap.js';
 
+// 导出相机控制相关（核心：相机控制/鼠标交互）
+export * from './controls/index.js';
+
 // 版本信息
 export const version = '1.0.0';
 export const author = { name: 'Babylon-Tile Team', email: 'team@example.com' };

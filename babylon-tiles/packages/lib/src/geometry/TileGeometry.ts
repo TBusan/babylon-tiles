@@ -11,6 +11,39 @@ import type { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Martini } from './Martini.js';
 
 /**
+ * 裙边生成开关：指定瓦片的哪些边生成裙边。
+ * 缺省（undefined）的边默认生成；内部共享边置 false 可避免与相邻瓦片裙边
+ * 在同一平面共面重叠（旋转掠射角时 z-fight 闪烁）。
+ */
+export interface SkirtEdges {
+	/** 北边（z=+0.5，slippy y=0） */
+	top?: boolean;
+	/** 南边（z=-0.5，slippy y=2^z-1） */
+	bottom?: boolean;
+	/** 西边（x=-0.5，slippy x=0） */
+	left?: boolean;
+	/** 东边（x=+0.5，slippy x=2^z-1） */
+	right?: boolean;
+}
+
+/**
+ * 按瓦片全局坐标计算数据边界裙边：全球金字塔边缘（x=0 / x=2^z-1、y=0 / y=2^z-1）
+ * 无相邻瓦片，需裙边遮盖侧面；内部共享边靠 Martini 边界满分辨率保证无缝，不需裙边。
+ * @param x 瓦片列（slippy）
+ * @param y 瓦片行（slippy，y=0 北）
+ * @param z 瓦片层级
+ */
+export function getBoundarySkirtEdges(x: number, y: number, z: number): SkirtEdges {
+	const maxCoord = (1 << z) - 1;
+	return {
+		top: y === 0,
+		bottom: y === maxCoord,
+		left: x === 0,
+		right: x === maxCoord,
+	};
+}
+
+/**
  * 瓦片几何体选项
  */
 export interface TileGeometryOptions {
@@ -308,6 +341,10 @@ export class TileGeometry {
 	 * @param skirtHeight - 裙边高度（局部坐标），默认 0
 	 * @param heightScale - 高程缩放因子（将米制高程转换为局部坐标），默认 1
 	 * @param worldScale - 瓦片世界宽度（米），用于在世界尺寸空间计算法线（见 _computeTerrainNormals），默认 1
+	 * @param skirtEdges - 指定哪些边生成裙边（默认 undefined = 四边全部生成）。
+	 *                    内部瓦片共享边若两侧都加裙边会在同一平面共面重叠，旋转掠射角时
+	 *                    z-fight 闪烁；数据边界（地图外缘）需保留裙边遮盖侧面。
+	 *                    由调用方用 getBoundarySkirtEdges 按瓦片坐标计算。
 	 * @returns 瓦片网格
 	 */
 	public static createMartiniTile(
@@ -317,7 +354,8 @@ export class TileGeometry {
 		maxError: number = 0,
 		skirtHeight: number = 0,
 		heightScale: number = 1,
-		worldScale: number = 1
+		worldScale: number = 1,
+		skirtEdges?: SkirtEdges
 	): Mesh {
 		const gridSize = Math.floor(Math.sqrt(terrain.length));
 
@@ -345,9 +383,9 @@ export class TileGeometry {
 			worldScale
 		);
 
-		// 添加裙边（从边缘顶点向下延伸）
+		// 添加裙边（从边缘顶点向下延伸；内部共享边不加，避免共面 z-fight）
 		if (skirtHeight > 0) {
-			TileGeometry._addMartiniSkirts(vertexData, gridSize, skirtHeight);
+			TileGeometry._addMartiniSkirts(vertexData, gridSize, skirtHeight, skirtEdges);
 		}
 
 		// 创建网格
@@ -416,12 +454,14 @@ export class TileGeometry {
 	/**
 	 * 为 Martini 生成的不规则网格添加裙边
 	 * 通过检测边界顶点（x/z 在 ±0.5 边缘）来识别外边缘
+	 * @param skirtEdges - 各边是否生成裙边；缺省或对应值非 false 的边生成（undefined = 四边全加）
 	 * @private
 	 */
 	private static _addMartiniSkirts(
 		vertexData: VertexData,
 		gridSize: number,
-		skirtHeight: number
+		skirtHeight: number,
+		skirtEdges?: SkirtEdges
 	): void {
 		const positions = vertexData.positions as number[];
 		const normals = vertexData.normals as number[];
@@ -481,9 +521,9 @@ export class TileGeometry {
 			}
 		};
 
-		addEdge(bottomEdge, 0, -1);
-		addEdge(topEdge, 0, 1);
-		addEdge(leftEdge, -1, 0);
-		addEdge(rightEdge, 1, 0);
+		if (skirtEdges?.bottom !== false) addEdge(bottomEdge, 0, -1);
+		if (skirtEdges?.top !== false) addEdge(topEdge, 0, 1);
+		if (skirtEdges?.left !== false) addEdge(leftEdge, -1, 0);
+		if (skirtEdges?.right !== false) addEdge(rightEdge, 1, 0);
 	}
 }

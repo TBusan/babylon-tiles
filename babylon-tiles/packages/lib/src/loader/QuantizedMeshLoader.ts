@@ -141,17 +141,11 @@ export class QuantizedMeshLoader {
 		for (let i = 0; i < indexCount; i++) {
 			const code = use32 ? view.getUint32(offset, le) : view.getUint16(offset, le);
 			offset += idxSize;
-			// high-water-mark 解码：
-			//   code == highest → 当前水印（并递增）
-			//   code <  highest → 已出现过的索引
-			//   code >  highest → 新索引 code-1（并递增水印）
-			if (code === highest) {
-				indices[i] = highest;
-				highest++;
-			} else if (code < highest) {
-				indices[i] = code;
-			} else {
-				indices[i] = code - 1;
+			// high-water-mark 解码（Cesium 规范，参考 CesiumTerrainProvider.decompressIndices_）：
+			// raw code 是"当前水印与目标索引之差"。code=0 表示引用一个新顶点（水印递增），
+			// code>0 表示引用一个已出现的顶点（索引 = 水印 - code）。
+			indices[i] = highest - code;
+			if (code === 0) {
 				highest++;
 			}
 		}
