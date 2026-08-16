@@ -274,10 +274,7 @@ export class TileMaterial {
 	 * @param color - 线框颜色
 	 * @returns 线框材质
 	 */
-	public static createWireframeMaterial(
-		scene: Scene,
-		color: Color3 = new Color3(0, 1, 0)
-	): StandardMaterial {
+	public static createWireframeMaterial(scene: Scene, color: Color3 = new Color3(0, 1, 0)): StandardMaterial {
 		const material = new StandardMaterial('tile-wireframe-material', scene);
 		material.wireframe = true;
 		material.emissiveColor = color;

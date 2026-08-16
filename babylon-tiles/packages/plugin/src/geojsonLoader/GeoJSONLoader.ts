@@ -49,10 +49,7 @@ export class GeoJSONLoader extends TileMaterialLoader {
 	 * @param params 加载参数，包括数据源、瓦片坐标等
 	 * @returns 瓦片纹理
 	 */
-	protected async doLoad(
-		url: string,
-		params: TileLoadClipParamsType<GeoJSONSource>
-	): Promise<Texture | undefined> {
+	protected async doLoad(url: string, params: TileLoadClipParamsType<GeoJSONSource>): Promise<Texture | undefined> {
 		const { x, y, z, source, scene } = params;
 		if (!scene) return undefined;
 
@@ -120,11 +117,7 @@ export class GeoJSONLoader extends TileMaterialLoader {
 	/**
 	 * 渲染单个要素
 	 */
-	private _renderFeature(
-		ctx: CanvasRenderingContext2D,
-		feature: any,
-		style: VectorStyle = {}
-	): void {
+	private _renderFeature(ctx: CanvasRenderingContext2D, feature: any, style: VectorStyle = {}): void {
 		const type = [
 			VectorFeatureTypes.Unknown,
 			VectorFeatureTypes.Point,
@@ -163,14 +156,7 @@ export class GeoJSONLoader extends TileMaterialLoader {
 	 * @param scene Babylon 场景
 	 * @returns 瓦片纹理；瓦片不存在时返回空纹理
 	 */
-	private _getTileTexture(
-		gv: any,
-		x: number,
-		y: number,
-		z: number,
-		style: VectorStyle,
-		scene: Scene
-	): Texture {
+	private _getTileTexture(gv: any, x: number, y: number, z: number, style: VectorStyle, scene: Scene): Texture {
 		// 读取 xyz 坐标的瓦片数据
 		const tile = gv.getTile(z, x, y);
 		// 读取失败或不显示返回空纹理

@@ -58,9 +58,7 @@ export class WorkerPool {
 	 */
 	constructor(workerCode: string, poolSize: number = 4) {
 		this._poolSize = Math.max(1, Math.min(poolSize, 16));
-		this._blobUrl = URL.createObjectURL(
-			new Blob([workerCode], { type: 'application/javascript' })
-		);
+		this._blobUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
 
 		// 预创建所有 Worker
 		for (let i = 0; i < this._poolSize; i++) {
@@ -120,9 +118,15 @@ export class WorkerPool {
 	 */
 	private _runTask(task: PoolTask): void {
 		const worker = this._idleWorkers.pop()!;
+		this._attach(worker, task);
+	}
+
+	/**
+	 * 将任务挂载到指定 Worker：一次性消息/错误监听 + postMessage（支持 Transferable 零拷贝）
+	 */
+	private _attach(worker: Worker, task: PoolTask): void {
 		this._activeTasks.set(worker, task);
 
-		// 设置一次性消息处理
 		const onMessage = (e: MessageEvent) => {
 			cleanup();
 			this._completedCount++;
@@ -145,7 +149,6 @@ export class WorkerPool {
 		worker.addEventListener('message', onMessage);
 		worker.addEventListener('error', onError);
 
-		// 发送数据（支持 Transferable 零拷贝）
 		if (task.transfer && task.transfer.length > 0) {
 			worker.postMessage(task.data, task.transfer);
 		} else {
@@ -161,35 +164,7 @@ export class WorkerPool {
 		if (this._disposed) return;
 
 		if (this._taskQueue.length > 0) {
-			const nextTask = this._taskQueue.shift()!;
-			this._activeTasks.set(worker, nextTask);
-
-			// 直接执行下一个任务（不经过 _runTask 以避免重复 pop）
-			const onMessage = (e: MessageEvent) => {
-				worker.removeEventListener('message', onMessage);
-				worker.removeEventListener('error', onError);
-				this._activeTasks.delete(worker);
-				this._completedCount++;
-				nextTask.resolve(e.data);
-				this._returnWorker(worker);
-			};
-
-			const onError = (e: ErrorEvent) => {
-				worker.removeEventListener('message', onMessage);
-				worker.removeEventListener('error', onError);
-				this._activeTasks.delete(worker);
-				nextTask.reject(e);
-				this._returnWorker(worker);
-			};
-
-			worker.addEventListener('message', onMessage);
-			worker.addEventListener('error', onError);
-
-			if (nextTask.transfer && nextTask.transfer.length > 0) {
-				worker.postMessage(nextTask.data, nextTask.transfer);
-			} else {
-				worker.postMessage(nextTask.data);
-			}
+			this._attach(worker, this._taskQueue.shift()!);
 		} else {
 			this._idleWorkers.push(worker);
 		}
@@ -223,11 +198,17 @@ export class WorkerPool {
 }
 
 /**
- * 地形解析专用 Worker 池（单例）
+ * 地形解析专用 Worker 池（Engine 作用域共享，引用计数管理）
  * 内联 Terrain-RGB 解析代码，避免额外文件依赖
+ *
+ * 生命周期：
+ * - 每张 TileMap 构造时 acquire()（+1）、dispose 时 release()（−1）；
+ * - parse() 每次调用也保活（+1/−1），保证地图销毁后仍在途的解析不被中途终止；
+ * - 引用归零才 terminate 全部 Worker 并释放 Blob URL。
  */
 export class TerrainWorkerPool {
 	private static _instance: WorkerPool | null = null;
+	private static _refCount = 0;
 
 	/** 内联 Worker 代码：解析 Terrain-RGB 图像数据为高程数组 */
 	private static readonly _workerCode = `
@@ -271,15 +252,29 @@ export class TerrainWorkerPool {
 	`;
 
 	/**
-	 * 获取全局地形解析 Worker 池实例
+	 * 地图持有池：引用计数 +1（池在首次 parse 时懒创建，此处不创建 Worker）。
+	 */
+	public static acquire(): void {
+		TerrainWorkerPool._refCount++;
+	}
+
+	/**
+	 * 地图释放池：引用计数 −1；归零时销毁全部 Worker 并释放 Blob URL。
+	 */
+	public static release(): void {
+		TerrainWorkerPool._refCount--;
+		if (TerrainWorkerPool._refCount <= 0) {
+			TerrainWorkerPool._disposeInstance();
+		}
+	}
+
+	/**
+	 * 获取全局地形解析 Worker 池实例（懒创建）
 	 * @param poolSize 池大小（首次调用时生效，默认 4）
 	 */
 	public static getInstance(poolSize: number = 4): WorkerPool {
 		if (!TerrainWorkerPool._instance) {
-			TerrainWorkerPool._instance = new WorkerPool(
-				TerrainWorkerPool._workerCode,
-				poolSize
-			);
+			TerrainWorkerPool._instance = new WorkerPool(TerrainWorkerPool._workerCode, poolSize);
 		}
 		return TerrainWorkerPool._instance;
 	}
@@ -291,15 +286,30 @@ export class TerrainWorkerPool {
 	 */
 	public static async parse(imgData: Uint8ClampedArray): Promise<Float32Array> {
 		const pool = TerrainWorkerPool.getInstance();
-		// 复制数据（因为 Transferable 会转移所有权）
-		const buffer = imgData.buffer.slice(0);
-		return pool.execute(new Uint8ClampedArray(buffer), [buffer]);
+		// 保活：即使地图在本调用期间 dispose，实例也存活到解析完成（见类注释）
+		TerrainWorkerPool._refCount++;
+		try {
+			// 复制数据（因为 Transferable 会转移所有权）
+			const buffer = imgData.buffer.slice(0);
+			return await pool.execute(new Uint8ClampedArray(buffer), [buffer]);
+		} finally {
+			TerrainWorkerPool._refCount--;
+			if (TerrainWorkerPool._refCount <= 0) {
+				TerrainWorkerPool._disposeInstance();
+			}
+		}
 	}
 
 	/**
-	 * 销毁全局实例
+	 * 强制销毁（兼容旧 API）：销毁实例并重置引用计数。
+	 * 多地图场景请用 acquire/release 成对管理，避免误杀其他地图的池。
 	 */
 	public static dispose(): void {
+		TerrainWorkerPool._refCount = 0;
+		TerrainWorkerPool._disposeInstance();
+	}
+
+	private static _disposeInstance(): void {
 		if (TerrainWorkerPool._instance) {
 			TerrainWorkerPool._instance.dispose();
 			TerrainWorkerPool._instance = null;

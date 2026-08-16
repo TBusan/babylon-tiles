@@ -112,13 +112,7 @@ export class TileFilterMaterial extends ShaderMaterial {
 	}
 
 	constructor(scene: Scene, options: FilterOptions = {}) {
-		const {
-			brightness = 1.0,
-			contrast = 1.0,
-			hue = 0.0,
-			saturation = 0.0,
-			opacity = 1.0,
-		} = options;
+		const { brightness = 1.0, contrast = 1.0, hue = 0.0, saturation = 0.0, opacity = 1.0 } = options;
 
 		super('tileFilterMaterial', scene, 'tileFilter', {
 			attributes: ['position', 'uv'],

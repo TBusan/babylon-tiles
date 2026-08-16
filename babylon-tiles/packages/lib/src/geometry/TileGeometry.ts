@@ -7,7 +7,6 @@
 import type { Scene } from '@babylonjs/core/scene';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
-import type { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Martini } from './Martini.js';
 
 /**
@@ -123,7 +122,7 @@ export class TileGeometry {
 
 				// 实际坐标（-0.5 到 0.5）
 				let posX = (u - 0.5) * width;
-				let posZ = (v - 0.5) * height;
+				const posZ = (v - 0.5) * height;
 
 				// 应用高程数据
 				let posY = 0;
@@ -204,12 +203,7 @@ export class TileGeometry {
 	 * 从网格边缘顶点向下延伸 skirtHeight 高度，形成围挡几何体
 	 * @private
 	 */
-	private static _addSkirts(
-		vertexData: VertexData,
-		segmentsW: number,
-		segmentsH: number,
-		skirtHeight: number
-	): void {
+	private static _addSkirts(vertexData: VertexData, segmentsW: number, segmentsH: number, skirtHeight: number): void {
 		const positions = vertexData.positions as number[];
 		const normals = vertexData.normals as number[];
 		const uvs = vertexData.uvs as number[];
@@ -220,11 +214,7 @@ export class TileGeometry {
 		let nextIndex = positions.length / 3;
 
 		// 辅助函数：添加一条边缘的裙边
-		const addEdge = (
-			edgeIndices: number[],
-			normalX: number,
-			normalZ: number
-		) => {
+		const addEdge = (edgeIndices: number[], normalX: number, normalZ: number) => {
 			const baseIndex = nextIndex;
 
 			// 为边缘上的每个顶点创建对应的裙边顶点（向下延伸）
@@ -421,11 +411,7 @@ export class TileGeometry {
 	 * @returns 倾斜局部空间的法线数组（归一化）
 	 * @private
 	 */
-	private static _computeTerrainNormals(
-		positions: number[],
-		indices: number[],
-		worldScale: number
-	): number[] {
+	private static _computeTerrainNormals(positions: number[], indices: number[], worldScale: number): number[] {
 		// 世界尺寸临时位置：X/Z 乘 S，Y 保持米制（与真实世界几何一致）
 		const worldPositions = new Float32Array(positions.length);
 		for (let i = 0; i < positions.length; i += 3) {
@@ -473,17 +459,17 @@ export class TileGeometry {
 
 		// 收集四条边缘上的顶点索引
 		const bottomEdge: number[] = []; // z ≈ -0.5
-		const topEdge: number[] = [];    // z ≈ +0.5
-		const leftEdge: number[] = [];   // x ≈ -0.5
-		const rightEdge: number[] = [];  // x ≈ +0.5
+		const topEdge: number[] = []; // z ≈ +0.5
+		const leftEdge: number[] = []; // x ≈ -0.5
+		const rightEdge: number[] = []; // x ≈ +0.5
 
 		for (let i = 0; i < vertexCount; i++) {
 			const x = positions[i * 3];
 			const z = positions[i * 3 + 2];
 
-			if (Math.abs(z - (-0.5)) < eps) bottomEdge.push(i);
+			if (Math.abs(z - -0.5) < eps) bottomEdge.push(i);
 			if (Math.abs(z - 0.5) < eps) topEdge.push(i);
-			if (Math.abs(x - (-0.5)) < eps) leftEdge.push(i);
+			if (Math.abs(x - -0.5) < eps) leftEdge.push(i);
 			if (Math.abs(x - 0.5) < eps) rightEdge.push(i);
 		}
 

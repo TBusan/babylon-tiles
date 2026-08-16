@@ -97,9 +97,7 @@ export class LercTerrainLoader {
 					if (typeof Lerc.load === 'function') {
 						await Lerc.load({ locateFile: () => lercWasmUrl });
 					}
-					LercTerrainLoader.setDecoder(
-						(buffer: ArrayBuffer) => Lerc.decode(buffer) as LercDecodeResult
-					);
+					LercTerrainLoader.setDecoder((buffer: ArrayBuffer) => Lerc.decode(buffer) as LercDecodeResult);
 					return true;
 				})
 				.catch(() => false);
@@ -137,7 +135,7 @@ export class LercTerrainLoader {
 		if (!LercTerrainLoader._decoder) {
 			throw new Error(
 				'LERC decoder not set. Call LercTerrainLoader.setDecoder() or ensureDecoder() first. ' +
-				'Example: LercTerrainLoader.setDecoder((buf) => Lerc.decode(buf))'
+					'Example: LercTerrainLoader.setDecoder((buf) => Lerc.decode(buf))'
 			);
 		}
 
@@ -232,10 +230,7 @@ export class LercTerrainLoader {
 	 * 从父级 DEM 中裁剪子区域
 	 * 用于超级别回退：请求的层级超过数据源最大层级时，从父瓦片截取
 	 */
-	private static _getSubDEM(
-		demData: DEMData,
-		bounds: [number, number, number, number]
-	): DEMData {
+	private static _getSubDEM(demData: DEMData, bounds: [number, number, number, number]): DEMData {
 		const { sx, sy, sw, sh } = LercTerrainLoader._getBoundsCoord(bounds, demData.width);
 
 		// Martini 需要 2^n + 1 尺寸
@@ -246,8 +241,12 @@ export class LercTerrainLoader {
 		const demArray = LercTerrainLoader._clipAndResize(
 			demData.array,
 			demData.width,
-			sx, sy, sw, sh,
-			targetWidth, targetHeight
+			sx,
+			sy,
+			sw,
+			sh,
+			targetWidth,
+			targetHeight
 		);
 
 		return { array: demArray, width: targetWidth, height: targetHeight };
@@ -274,8 +273,12 @@ export class LercTerrainLoader {
 	private static _clipAndResize(
 		buffer: Float32Array,
 		srcWidth: number,
-		sx: number, sy: number, sw: number, sh: number,
-		dw: number, dh: number
+		sx: number,
+		sy: number,
+		sw: number,
+		sh: number,
+		dw: number,
+		dh: number
 	): Float32Array {
 		// 裁剪
 		const clipped = new Float32Array(sw * sh);

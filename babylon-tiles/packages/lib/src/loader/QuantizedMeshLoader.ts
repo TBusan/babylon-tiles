@@ -115,7 +115,9 @@ export class QuantizedMeshLoader {
 		const height = new Float32Array(vertexCount);
 		const hScale = (maxHeight - minHeight) / 32767;
 
-		let su = 0, sv = 0, sh = 0;
+		let su = 0,
+			sv = 0,
+			sh = 0;
 		for (let i = 0; i < vertexCount; i++) {
 			// zig-zag 增量解码
 			su += zigZagDecode(rawU[i]);
@@ -162,8 +164,10 @@ export class QuantizedMeshLoader {
 		// ---- Extensions（跳过）----
 
 		// 顶点/三角形经纬度范围
-		let lonMin = Infinity, lonMax = -Infinity;
-		let latMin = Infinity, latMax = -Infinity;
+		let lonMin = Infinity,
+			lonMax = -Infinity;
+		let latMin = Infinity,
+			latMax = -Infinity;
 		for (let i = 0; i < vertexCount; i++) {
 			if (lon[i] < lonMin) lonMin = lon[i];
 			if (lon[i] > lonMax) lonMax = lon[i];
@@ -183,12 +187,7 @@ export class QuantizedMeshLoader {
 	 * @param buckets 预建经度桶（可由 sampleGrid 一次性构建复用）
 	 * @returns 插值高程（米）；未命中任何三角形返回 0
 	 */
-	public static interpolate(
-		data: QuantizedMeshTileData,
-		lon: number,
-		lat: number,
-		buckets: LonBucket[]
-	): number {
+	public static interpolate(data: QuantizedMeshTileData, lon: number, lat: number, buckets: LonBucket[]): number {
 		// 定位经度桶（±1 邻桶以覆盖 bbox 边界）
 		const lonT = (lon - data.lonMin) / (data.lonMax - data.lonMin || 1);
 		const b = Math.min(
@@ -206,11 +205,17 @@ export class QuantizedMeshLoader {
 				const i1 = triangles[tri + 1];
 				const i2 = triangles[tri + 2];
 				const h = pointInTriangle(
-					lon, lat,
-					data.lon[i0], data.lat[i0],
-					data.lon[i1], data.lat[i1],
-					data.lon[i2], data.lat[i2],
-					data.height[i0], data.height[i1], data.height[i2]
+					lon,
+					lat,
+					data.lon[i0],
+					data.lat[i0],
+					data.lon[i1],
+					data.lat[i1],
+					data.lon[i2],
+					data.lat[i2],
+					data.height[i0],
+					data.height[i1],
+					data.height[i2]
 				);
 				if (h !== null) return h;
 			}
@@ -237,7 +242,9 @@ export class QuantizedMeshLoader {
 		}
 		const span = data.lonMax - data.lonMin || 1;
 		for (let t = 0; t < triangles.length; t += 3) {
-			const i0 = triangles[t], i1 = triangles[t + 1], i2 = triangles[t + 2];
+			const i0 = triangles[t],
+				i1 = triangles[t + 1],
+				i2 = triangles[t + 2];
 			const lonMin = Math.min(lon[i0], lon[i1], lon[i2]);
 			const lonMax = Math.max(lon[i0], lon[i1], lon[i2]);
 			const latMin = Math.min(lat[i0], lat[i1], lat[i2]);
@@ -281,16 +288,25 @@ function clampInt(v: number, min: number, max: number): number {
  * 点在三角形内（经纬度 2D 叉积测试）且返回重心插值高程；不在则返回 null。
  */
 function pointInTriangle(
-	px: number, py: number,
-	ax: number, ay: number,
-	bx: number, by: number,
-	cx: number, cy: number,
-	ha: number, hb: number, hc: number
+	px: number,
+	py: number,
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number,
+	cx: number,
+	cy: number,
+	ha: number,
+	hb: number,
+	hc: number
 ): number | null {
 	// 叉积符号（三角形逆时针，quantized-mesh 默认 CCW）
-	const v0x = cx - ax, v0y = cy - ay;
-	const v1x = bx - ax, v1y = by - ay;
-	const v2x = px - ax, v2y = py - ay;
+	const v0x = cx - ax,
+		v0y = cy - ay;
+	const v1x = bx - ax,
+		v1y = by - ay;
+	const v2x = px - ax,
+		v2y = py - ay;
 
 	const dot00 = v0x * v0x + v0y * v0y;
 	const dot01 = v0x * v1x + v0y * v1y;

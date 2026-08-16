@@ -37,11 +37,7 @@ export class FakeEarth extends Mesh {
 	 * @param bkColor 背景色（保留 API，shader 主要使用 airColor）
 	 * @param airColor 大气辉光颜色
 	 */
-	public constructor(
-		scene: Scene,
-		bkColor: Color3,
-		airColor: Color3 = new Color3(0.4, 0.6, 0.8)
-	) {
+	public constructor(scene: Scene, bkColor: Color3, airColor: Color3 = new Color3(0.4, 0.6, 0.8)) {
 		super('fakeEarth', scene);
 
 		this.material = new EarthMaskMaterial(scene, { bkColor, airColor });
@@ -51,12 +47,7 @@ export class FakeEarth extends Mesh {
 		const size = 5;
 		const half = size / 2;
 		const vd = new VertexData();
-		vd.positions = [
-			-half, -half, 0,
-			half, -half, 0,
-			half, half, 0,
-			-half, half, 0,
-		];
+		vd.positions = [-half, -half, 0, half, -half, 0, half, half, 0, -half, half, 0];
 		vd.uvs = [0, 0, 1, 0, 1, 1, 0, 1];
 		vd.indices = [0, 1, 2, 0, 2, 3];
 		vd.applyToMesh(this);

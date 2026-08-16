@@ -241,11 +241,7 @@ export class VectorTileRender {
 	}
 
 	/** 渲染线要素 */
-	private _renderLineString(
-		ctx: CanvasRenderingContext2D,
-		feature: VectorFeature,
-		scale: number
-	): void {
+	private _renderLineString(ctx: CanvasRenderingContext2D, feature: VectorFeature, scale: number): void {
 		const lines = feature.geometry;
 
 		ctx.beginPath();
@@ -262,11 +258,7 @@ export class VectorTileRender {
 	}
 
 	/** 渲染面要素 */
-	private _renderPolygon(
-		ctx: CanvasRenderingContext2D,
-		feature: VectorFeature,
-		scale: number
-	): void {
+	private _renderPolygon(ctx: CanvasRenderingContext2D, feature: VectorFeature, scale: number): void {
 		const polygons = feature.geometry;
 
 		ctx.beginPath();

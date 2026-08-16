@@ -31,12 +31,7 @@ export enum LODAction {
  * @param threshold 瓦片LOD阈值
  * @returns LODAction 细化、合并或无动作
  */
-export function LODEvaluate(
-	tile: Tile,
-	minLevel: number,
-	maxLevel: number,
-	threshold: number
-): LODAction {
+export function LODEvaluate(tile: Tile, minLevel: number, maxLevel: number, threshold: number): LODAction {
 	// 非叶子且超过最大层级 → 删除子瓦片
 	if (!tile.isLeaf && tile.z > maxLevel) {
 		return LODAction.REMOVE;
@@ -60,11 +55,7 @@ export function LODEvaluate(
 	}
 
 	// 非叶子、达到最小层级、距离比例大于阈值 → 删除子瓦片
-	if (
-		!tile.isLeaf &&
-		tile.z >= minLevel &&
-		distRatio > threshold * 1.1
-	) {
+	if (!tile.isLeaf && tile.z >= minLevel && distRatio > threshold * 1.1) {
 		return LODAction.REMOVE;
 	}
 
@@ -149,11 +140,7 @@ export function createChildren(parentTile: Tile, loader: ITileLoader): Tile[] {
  * @param z 瓦片层级
  * @returns 地理坐标边界 [minLon, minLat, maxLon, maxLat]
  */
-export function getTileLonLatBounds(
-	x: number,
-	y: number,
-	z: number
-): [number, number, number, number] {
+export function getTileLonLatBounds(x: number, y: number, z: number): [number, number, number, number] {
 	const n = Math.pow(2, z);
 	const tileSizeLon = 360 / n;
 	const tileSizeLat = 180 / n;

@@ -11,27 +11,98 @@ import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
+import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
+import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader';
 import '@babylonjs/loaders/glTF';
 
-import { TileMap, GDSource, CesiumTerrainSource } from '@babylon-tile/lib';
+import {
+	TileMap,
+	TileMapControls,
+	GDSource,
+	CesiumTerrainSource,
+	MapBoxSource,
+	MapBoxTerrainSource,
+	QuickSources,
+	registerImgLoader,
+} from '@babylon-tile/lib';
+import type { ISource } from '@babylon-tile/lib';
+import { GeoJSONSource, GroundGroup, GeoJSONLoader } from '@babylon-tile/plugin';
+
+// 注册 geojson 覆盖层材质加载器（plugin 的 loader 需显式注册到 loaderFactory，
+// 否则 getMaterialLoader('geojson') 抛错被吞掉 → 覆盖层静默缺失）
+registerImgLoader(new GeoJSONLoader());
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
 
-// ======================== 常量（对齐 three-tile TileMapControls） ========================
+// ======================== 常量 ========================
 const BACK_COLOR = new Color4(0.859, 0.941, 1.0, 1.0); // 0xdbf0ff 浅天蓝
-const MAP_MAX_BETA = Math.PI / 2.1; // ≈ 85.7° 最大仰角
-const REST_AZIMUTH_DIST = 8e6; // 超过此距离锁定方位角
-const MAX_DISTANCE = 3e7;
-const MIN_DISTANCE = 10;
 
 // ======================== 地形（默认 Cesium ion；Mapbox token 保留备用） ========================
 // 如需切回 Mapbox raster-dem，把 demSource 改为：
 //   new MapBoxTerrainSource({ token: MAPBOX_TOKEN })
 // 并在 import 中补回 MapBoxTerrainSource。此 token 为真实 token，刻意保留，不可回退。
 const MAPBOX_TOKEN = 'pk.eyJ1IjoidGJ1c2FuIiwiYSI6ImNtZjY2emZneDBkY24ybXB4cmpvdmwzNWYifQ.h6tcQ380WN5AW6fZr08how';
+
+/**
+ * Mars3D 免费 quantized-mesh 地形源（国内可达，无需 token）
+ * 走 vite proxy（/terrain → https://data1.mars3d.cn），由代理改写 Referer/Origin 绕过防盗链。
+ * Mars3D 瓦片为小端字节序 + 2×2 根瓦片网格，Accept 头按服务要求配置。
+ */
+function createMars3DTerrain(): CesiumTerrainSource {
+	return new CesiumTerrainSource({
+		url: '/terrain/{z}/{x}/{y}.terrain',
+		tilingScheme: 'EPSG:4326',
+		tms: true,
+		numberOfLevelZeroTilesX: 2,
+		numberOfLevelZeroTilesY: 2,
+		littleEndian: true,
+		headers: {
+			Accept: 'application/vnd.quantized-mesh;extensions=octvertexnormals,application/octet-stream;q=0.9,*/*;q=0.01',
+		},
+	});
+}
+
+/**
+ * 手动矢量面填充：凸多边形 fan 三角网 + 半透明材质
+ * @param scene - 场景
+ * @param pts - 多边形世界坐标点（凸多边形即可）
+ * @param color - 填充色
+ */
+function createPolygonFill(scene: Scene, pts: Vector3[], color: Color3): Mesh {
+	const mesh = new Mesh('vec-poly-fill', scene);
+	const positions: number[] = [];
+	pts.forEach((p) => positions.push(p.x, p.y, p.z));
+	const indices: number[] = [];
+	for (let i = 1; i < pts.length - 1; i++) {
+		indices.push(0, i, i + 1);
+	}
+	// 平面法线（多边形大致在水平面，翻转朝上以免背面渲染成暗色）
+	const n = Vector3.Cross(pts[1].subtract(pts[0]), pts[2].subtract(pts[0])).normalize();
+	if (n.y < 0) {
+		n.scaleInPlace(-1);
+	}
+	const normals: number[] = [];
+	pts.forEach(() => normals.push(n.x, n.y, n.z));
+
+	const vd = new VertexData();
+	vd.positions = positions;
+	vd.normals = normals;
+	vd.indices = indices;
+	vd.applyToMesh(mesh);
+
+	const mat = new StandardMaterial('vec-poly-mat', scene);
+	mat.diffuseColor = color;
+	mat.alpha = 0.4;
+	mat.backFaceCulling = false;
+	mesh.material = mat;
+	return mesh;
+}
 
 const createScene = async (): Promise<Scene> => {
 	const scene = new Scene(engine);
@@ -50,39 +121,20 @@ const createScene = async (): Promise<Scene> => {
 	// 半径 12000（z≈11，瓦片 ~9.8km）：相机高 = radius·cos(β) ≈ 6000m，
 	// 该区域 DEM 海拔 2400-2900m（3000m 级山峰），相机需明显高出峰顶，
 	// 否则初始视图会被山体遮挡只剩天空（radius=5000 时相机 y≈2500 与山峰同高）。
-	const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 12000, new Vector3(1558472.87, 0, 4163881.14), scene);
-	camera.fov = 70 * Math.PI / 180; // 70° FOV（three-tile 默认 70）
-	// ---- 鼠标按键映射：MAP 模式 = 左键平移、右键旋转（与 three-tile 一致）----
-	// attachControl(noPreventDefault, useCtrlForPanning, panningMouseButton)
-	// panningMouseButton=0 → 左键平移，右键自动变为旋转
-	camera.attachControl(true, true, 0);
+	const camera = new ArcRotateCamera(
+		'camera',
+		-Math.PI / 2,
+		Math.PI / 3,
+		12000,
+		new Vector3(1558472.87, 0, 4163881.14),
+		scene
+	);
+	camera.fov = (70 * Math.PI) / 180; // 70° FOV（three-tile 默认 70）
 
-	// ---- 缩放设置 ----
-	camera.wheelDeltaPercentage = 0.02; // 基础值，会在渲染循环中动态调整
-	camera.lowerRadiusLimit = MIN_DISTANCE;
-	camera.upperRadiusLimit = MAX_DISTANCE;
-
-	// ---- 角度限制 ----
-	camera.upperBetaLimit = MAP_MAX_BETA;
-	camera.lowerBetaLimit = 0.05;
-	camera.lowerAlphaLimit = -Infinity;
-	camera.upperAlphaLimit = Infinity;
-
-	// ---- 深度范围 ----
-	// near 使用固定小值：动态 near 有一帧延迟，快速缩放时会裁剪地面导致瓦片不加载
-	camera.minZ = 1;
-	camera.maxZ = 5e7;
-
-	// ---- 平移设置（对齐 three-tile screenSpacePanning=false） ----
-	camera.panningAxis = new Vector3(1, 0, 1); // 只在 XZ 水平面平移
-	camera.panningSensibility = 2500 / camera.radius;
-
-	// ---- 阻尼/惯性（对齐 three-tile dampingFactor=0.1） ----
-	// Babylon inertia=0 表示无惯性（立即停止），=1 表示永远滑动
-	// three-tile dampingFactor=0.1 → 每帧保留 90% 速度 → Babylon inertia ≈ 0.9
-	// 但 three-tile 的 damping 更紧凑，这里用 0.85 使手感接近
-	camera.inertia = 0.85;
-	camera.panningInertia = 0.85;
+	// 相机控制：使用 lib 提供的 TileMapControls（MAP 模式：左键平移、右键旋转），
+	// attachControl/距离与仰角限制/惯性/每帧动态缩放速度/平移灵敏度/方位角锁定/
+	// 动态 far/限高均由其内部维护，不再在此内联重复。
+	const controls = new TileMapControls(camera);
 
 	// ======================== 光照（对齐 three-tile AmbientLight + DirectionalLight） ========================
 	const hemiLight = new HemisphericLight('hemiLight', new Vector3(0, 1, 0), scene);
@@ -93,33 +145,17 @@ const createScene = async (): Promise<Scene> => {
 	dirLight.intensity = 0.6;
 
 	// ======================== 地图（lon0=90 对齐 three-tile 默认亚洲中心） ========================
+	// 当前底图（可切换）。所有内置源 projectionID='3857'（Web Mercator），切换不改变地图投影。
+	let _basemap: ISource = new GDSource({ style: 'img', minLevel: 2, maxLevel: 18 });
+	let _geojsonActive = false;
+	let _geojsonSource: GeoJSONSource | null = null;
+	let _vectorsShown = false;
+	let _glbRoot: TransformNode | null = null;
+
 	const map = TileMap.create({
 		scene,
-		imgSource: [
-			// 原 ArcGisSource(World_Imagery) 在国内网络不可达（连接超时），
-			// 瓦片永远加载不完导致地图停滞。改用无需 token 的高德影像源。
-			new GDSource({
-				style: 'img',
-				minLevel: 2,
-				maxLevel: 18,
-			}),
-		],
-		demSource: new CesiumTerrainSource({
-			// Mars3D 免费 quantized-mesh 地形（国内可达，无需 token）。
-			// 走 vite proxy（/terrain → https://data1.mars3d.cn），由代理改写
-			// Referer/Origin 绕过防盗链（浏览器无法设置这两个 forbidden header）。
-			// Mars3D 瓦片为小端字节序 + 2×2 根瓦片网格，Accept 头按服务要求配置。
-			url: '/terrain/{z}/{x}/{y}.terrain',
-			tilingScheme: 'EPSG:4326',
-			tms: true,
-			numberOfLevelZeroTilesX: 2,
-			numberOfLevelZeroTilesY: 2,
-			littleEndian: true,
-			headers: {
-				Accept:
-					'application/vnd.quantized-mesh;extensions=octvertexnormals,application/octet-stream;q=0.9,*/*;q=0.01',
-			},
-		}),
+		imgSource: _basemap,
+		demSource: createMars3DTerrain(),
 		minLevel: 2,
 		maxLevel: 18,
 		lon0: 90, // 中央经度 90°E（对齐 three-tile demo）
@@ -141,57 +177,266 @@ const createScene = async (): Promise<Scene> => {
 		}
 	});
 
-	// Expose for debugging
+	// ======================== 底图 / 地形切换 + 点线面 + GLB 示例 ========================
+	// imgSource/demSource setter 赋值即自动 reload；渲染循环每帧 map.update(camera) 完成加载。
+
+	/** 重新应用影像源数组：底图 +（可选）geojson 覆盖层 */
+	function applyImgSource() {
+		const sources: ISource[] = [_basemap];
+		if (_geojsonActive && _geojsonSource) {
+			sources.push(_geojsonSource);
+		}
+		map.imgSource = sources;
+	}
+
+	/**
+	 * 相机取景：对准经纬度中心（保持当前方位，调整目标与距离）。
+	 * 演示数据分散在 100km+ 范围（若尔盖湿地 ~130km 宽、兰州在 35°N 北边 ~120km），
+	 * 默认相机 radius=12000 视野只有 ~10km，不加取景点击按钮看不到数据。
+	 */
+	function focusOn(lon: number, lat: number, radius: number, alt = 0): void {
+		const w = map.geo2world(new Vector3(lon, lat, alt));
+		camera.setTarget(new Vector3(w.x, w.y, w.z));
+		camera.radius = radius;
+	}
+
+	/** 底图切换：影像 / 路网 / OSM / Mapbox 卫星 */
+	function switchBasemap(name: string) {
+		switch (name) {
+			case 'cva':
+				_basemap = new GDSource({ style: 'cva', minLevel: 2, maxLevel: 18 });
+				break;
+			case 'osm':
+				_basemap = QuickSources.osm({ minLevel: 2 });
+				break;
+			case 'mapbox':
+				_basemap = new MapBoxSource({ token: MAPBOX_TOKEN, style: 'mapbox.satellite' });
+				break;
+			default:
+				_basemap = new GDSource({ style: 'img', minLevel: 2, maxLevel: 18 });
+				break;
+		}
+		applyImgSource();
+	}
+
+	/** 地形切换：Mars3D / Mapbox terrain-rgb / 无地形（平面） */
+	function switchTerrain(name: string) {
+		switch (name) {
+			case 'mapbox':
+				map.demSource = new MapBoxTerrainSource({ token: MAPBOX_TOKEN });
+				break;
+			case 'none':
+				map.demSource = undefined;
+				break;
+			default:
+				map.demSource = createMars3DTerrain();
+				break;
+		}
+	}
+
+	/** GeoJSON 覆盖层开关（叠在底图之上，保留底图） */
+	function toggleGeoJSONOverlay(): boolean {
+		_geojsonActive = !_geojsonActive;
+		if (_geojsonActive && !_geojsonSource) {
+			_geojsonSource = new GeoJSONSource({
+				url: '/demo_features.geojson',
+				style: {
+					minLevel: 2,
+					maxLevel: 18,
+					color: '#ff5252',
+					weight: 2,
+					opacity: 0.9,
+					fill: true,
+					fillColor: '#ff5252',
+					fillOpacity: 0.18,
+					textField: 'name',
+					fontColor: '#ffffff',
+				},
+			});
+		}
+		applyImgSource();
+		if (_geojsonActive) {
+			// 取景到若尔盖湿地（多边形 ~130km 宽）
+			focusOn(102.9, 33.8, 190000);
+		}
+		return _geojsonActive;
+	}
+
+	// 手动点线面数据：geo2world(lon, lat, alt) 定位，挂 _vectorGroup 统一清除
+	const _vectorGroup = new TransformNode('demo-vectors', scene);
+	_vectorGroup.setEnabled(false);
+
+	/** 手动点线面开关（重建场景内的矢量 Mesh） */
+	function toggleManualVectors(): boolean {
+		_vectorsShown = !_vectorsShown;
+		_vectorGroup.getChildren().forEach((c) => c.dispose());
+		if (!_vectorsShown) {
+			_vectorGroup.setEnabled(false);
+			return false;
+		}
+		_vectorGroup.setEnabled(true);
+
+		// 点：城市位置球体（alt=3200 略高于地表，避免被起伏遮挡）
+		const CITIES: Array<[number, number, string]> = [
+			[103.83, 36.06, '兰州'],
+			[103.2, 35.6, '临夏'],
+			[102.9, 35.0, '合作'],
+			[102.9, 33.6, '若尔盖'],
+			[103.2, 34.0, '迭部'],
+		];
+		const pointMat = new StandardMaterial('vec-point-mat', scene);
+		pointMat.diffuseColor = new Color3(1, 0.4, 0.2);
+		pointMat.specularColor = new Color3(0.2, 0.2, 0.2);
+		for (const [lon, lat, name] of CITIES) {
+			const sph = MeshBuilder.CreateSphere(`vec-point-${name}`, { diameter: 300, segments: 12 }, scene);
+			sph.material = pointMat;
+			sph.position = map.geo2world(new Vector3(lon, lat, 3200));
+			sph.setParent(_vectorGroup);
+		}
+
+		// 线：兰州-若尔盖 示意道路
+		const ROAD: Array<[number, number]> = [
+			[103.83, 36.06],
+			[103.2, 35.6],
+			[102.9, 35.0],
+			[103.2, 34.0],
+			[103.9, 33.4],
+			[104.1, 33.2],
+			[103.8, 30.7],
+		];
+		const linePts = ROAD.map(([lon, lat]) => map.geo2world(new Vector3(lon, lat, 3100)));
+		const line = MeshBuilder.CreateLines('vec-line', { points: linePts }, scene);
+		line.color = new Color3(0.2, 0.6, 1);
+		line.setParent(_vectorGroup);
+
+		// 面：若尔盖湿地（外轮廓 + 半透明填充）
+		const POLY: Array<[number, number]> = [
+			[102.2, 34.4],
+			[103.6, 34.4],
+			[103.6, 33.2],
+			[102.2, 33.2],
+		];
+		const polyPts = POLY.map(([lon, lat]) => map.geo2world(new Vector3(lon, lat, 3000)));
+		const outline = MeshBuilder.CreateLines('vec-poly-outline', { points: [...polyPts, polyPts[0]] }, scene);
+		outline.color = new Color3(1, 0.7, 0.2);
+		outline.setParent(_vectorGroup);
+
+		const fill = createPolygonFill(scene, polyPts, new Color3(1, 0.7, 0.2));
+		fill.name = 'vec-poly-fill';
+		fill.setParent(_vectorGroup);
+
+		// 取景到矢量区（兰州 36.06°N ~ 若尔盖 33.6°N，~270km 南北跨度）
+		focusOn(103.4, 34.8, 330000);
+		return true;
+	}
+
+	// GLB 模型示例：SceneLoader 加载，GroundGroup 贴地
+	let _groundGroup: GroundGroup | null = null;
+
+	/** 加载 GLB 模型（已加载则先移除再重新加载） */
+	async function loadGLB(): Promise<boolean> {
+		if (_glbRoot) {
+			removeGLB();
+		}
+		try {
+			const result = await SceneLoader.ImportMeshAsync('', '/', 'demo_model.glb', scene);
+			const root = result.meshes[0];
+			if (!root) {
+				return false;
+			}
+			root.name = 'demo-glb';
+			root.position = map.geo2world(new Vector3(103.8, 35.0, 2800));
+			if (!_groundGroup) {
+				_groundGroup = new GroundGroup('glb-ground', map, { updateEveryTile: true });
+			}
+			_groundGroup.add(root);
+			_glbRoot = root;
+			// 取景到 GLB 位置
+			focusOn(103.8, 35.0, 45000);
+			return true;
+		} catch (e) {
+			console.error('GLB load failed:', e);
+			return false;
+		}
+	}
+
+	/** 移除 GLB 模型 */
+	function removeGLB(): void {
+		if (_glbRoot) {
+			_glbRoot.dispose();
+			_glbRoot = null;
+		}
+	}
+
+	// ======================== 工具栏事件 ========================
+	const toolbar = document.getElementById('toolbar');
+	toolbar?.querySelectorAll<HTMLButtonElement>('button[data-basemap]').forEach((btn) => {
+		btn.addEventListener('click', () => {
+			switchBasemap(btn.dataset.basemap!);
+			toolbar.querySelectorAll('button[data-basemap]').forEach((b) => b.classList.remove('active'));
+			btn.classList.add('active');
+		});
+	});
+	toolbar?.querySelectorAll<HTMLButtonElement>('button[data-terrain]').forEach((btn) => {
+		btn.addEventListener('click', () => {
+			switchTerrain(btn.dataset.terrain!);
+			toolbar.querySelectorAll('button[data-terrain]').forEach((b) => b.classList.remove('active'));
+			btn.classList.add('active');
+		});
+	});
+
+	const btnGeojson = document.getElementById('btn-geojson');
+	btnGeojson?.addEventListener('click', () => {
+		const on = toggleGeoJSONOverlay();
+		btnGeojson.classList.toggle('active', on);
+		btnGeojson.textContent = on ? 'GeoJSON ✓' : 'GeoJSON';
+	});
+	const btnVectors = document.getElementById('btn-vectors');
+	btnVectors?.addEventListener('click', () => {
+		const on = toggleManualVectors();
+		btnVectors.classList.toggle('active', on);
+		btnVectors.textContent = on ? '点线面 ✓' : '点线面';
+	});
+	document.getElementById('btn-glb')?.addEventListener('click', () => {
+		void loadGLB();
+	});
+	document.getElementById('btn-glb-remove')?.addEventListener('click', () => {
+		removeGLB();
+	});
+
+	// (window as any).__switches 见下方；controls 供调试探针访问
 	(window as any).__scene = scene;
 	(window as any).__map = map;
 	(window as any).__camera = camera;
+	(window as any).__controls = controls;
+	(window as any).__switches = {
+		switchBasemap,
+		switchTerrain,
+		toggleGeoJSONOverlay,
+		toggleManualVectors,
+		loadGLB,
+		removeGLB,
+		state: () => ({
+			basemap: _basemap.url,
+			geojson: _geojsonActive,
+			vectors: _vectorsShown,
+			glb: !!_glbRoot,
+		}),
+	};
 
-	// ======================== 渲染循环（动态相机参数，对齐 three-tile TileMapControls.onChange） ========================
+	// ======================== 渲染循环（动态相机参数由 TileMapControls 维护，这里只处理地图/雾/FakeEarth） ========================
 	scene.registerBeforeRender(() => {
 		map.update(camera);
 
 		const dist = camera.radius;
 		const beta = Math.max(camera.beta, 0.01); // 当前仰角（polar angle）
 
-		// 1. 动态缩放速度：zoomSpeed = max(log(dist/1e3), 1)
-		const zoomSpeed = Math.max(Math.log(dist / 1e3), 1);
-		camera.wheelDeltaPercentage = 0.01 * zoomSpeed;
-
-		// 2. 动态平移灵敏度
-		// 注：panningAxis=(1,0,1) 使屏幕Y方向有效速度为 X 方向的 sin(beta) 倍，
-		// 这是 Babylon.js 的固有行为，不能通过每帧修改 inertialPanningY 来补偿（会导致指数放大）。
-		// 通过适当降低 sensibility 使整体平移速度匹配 three-tile 的手感。
-		camera.panningSensibility = 2000 / dist;
-
-		// 3. 方位角锁定：远距离时锁定朝北（对齐 three-tile restAzimuthDist=8e6）
-		if (dist > REST_AZIMUTH_DIST) {
-			camera.lowerAlphaLimit = -Math.PI / 2;
-			camera.upperAlphaLimit = -Math.PI / 2;
-		} else {
-			camera.lowerAlphaLimit = -Infinity;
-			camera.upperAlphaLimit = Infinity;
-		}
-
-		// 4. 动态仰角限制：maxPolar = min((1e7/dist)^2, MAP_MAX_BETA)
-		const maxBeta = Math.min(Math.pow(1e7 / dist, 2), MAP_MAX_BETA);
-		camera.upperBetaLimit = Math.max(maxBeta, camera.lowerBetaLimit ?? 0.05);
-
-		// 5. 动态 far（near 固定为 1，避免一帧延迟导致近裁面裁剪地面）
-		// far = clamp((dist / (polar/1.5)) * 7, 2e4, maxDist*2)
-		const far = Math.min(Math.max((dist / (beta / 1.5)) * 7, 2e4), MAX_DISTANCE * 2);
-		camera.maxZ = far;
-
-		// 6. 动态雾密度（对齐 three-tile: density = polar/(dist+1) * factor * 0.2）
+		// 动态雾密度（对齐 three-tile: density = polar/(dist+1) * factor * 0.2）
 		scene.fogDensity = (beta / (dist + 1)) * 0.2;
 
-		// 7. 伪球体可见性（远距离 + 非完全俯视时显示）
+		// 伪球体可见性（远距离 + 非完全俯视时显示）
 		if (fakeEarth) {
 			fakeEarth.setEnabled(dist > 5e5 && beta < Math.PI / 2);
-		}
-
-		// 8. 相机防穿地（简化版：限制 target.y 不低于 0）
-		if (camera.target.y < 0) {
-			camera.target.y = 0;
 		}
 	});
 
@@ -266,12 +511,11 @@ function createFakeEarth(scene: Scene, map: TileMap) {
 	return plane;
 }
 
-createScene().then(scene => {
+createScene().then((scene) => {
 	engine.runRenderLoop(() => {
 		scene.render();
 		updateStats();
 	});
-	initEventListeners(scene);
 });
 
 function updateStats() {
@@ -279,14 +523,6 @@ function updateStats() {
 	if (fpsEl) {
 		fpsEl.textContent = engine.getFps().toFixed();
 	}
-}
-
-function initEventListeners(scene: Scene) {
-	const canvas = scene.getEngine().getRenderingCanvas();
-	if (!canvas) return;
-	canvas.addEventListener('mousemove', _evt => {
-		// 鼠标位置拾取逻辑
-	});
 }
 
 const loadingEl = document.getElementById('loading');

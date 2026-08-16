@@ -154,10 +154,9 @@ export class CesiumTerrainSource extends TileSource {
 		if (this.url || !this.token) {
 			return;
 		}
-		const resp = await fetch(
-			`https://api.cesium.com/v1/assets/${this.assetId}/endpoint`,
-			{ headers: { Authorization: `Bearer ${this.token}` } }
-		);
+		const resp = await fetch(`https://api.cesium.com/v1/assets/${this.assetId}/endpoint`, {
+			headers: { Authorization: `Bearer ${this.token}` },
+		});
 		if (!resp.ok) {
 			throw new Error(`Cesium ion endpoint request failed: ${resp.status}`);
 		}
@@ -207,10 +206,7 @@ export class CesiumTerrainSource extends TileSource {
 
 		// 服务层级：使单个服务瓦片经度跨度 ≈ 本地瓦片经度跨度（360/2^z）。
 		// 服务经度跨度 = 360 / (2^zz × numberOfLevelZeroTilesX)，故 zz ≈ z - log2(rootX)。
-		const zz = Math.min(
-			Math.max(z - Math.log2(this.numberOfLevelZeroTilesX), this.minLevel),
-			this.maxLevel
-		);
+		const zz = Math.min(Math.max(z - Math.log2(this.numberOfLevelZeroTilesX), this.minLevel), this.maxLevel);
 
 		if (this.tilingScheme === 'EPSG:4326') {
 			const nX = Math.pow(2, zz) * this.numberOfLevelZeroTilesX;
@@ -253,19 +249,13 @@ export class CesiumTerrainSource extends TileSource {
 		const minY = worldSize - (sy + 1) * tileSize;
 		const maxX = minX + tileSize;
 		const maxY = worldSize - sy * tileSize;
-		const yToLat = (wy: number) =>
-			((2 * Math.atan(Math.exp(wy / 6378137)) - Math.PI / 2) * 180) / Math.PI;
+		const yToLat = (wy: number) => ((2 * Math.atan(Math.exp(wy / 6378137)) - Math.PI / 2) * 180) / Math.PI;
 		return [
 			{
 				x: sx,
 				y: sy,
 				z: zz,
-				lonLatBounds: [
-					(minX / worldSize) * 180,
-					yToLat(minY),
-					(maxX / worldSize) * 180,
-					yToLat(maxY),
-				],
+				lonLatBounds: [(minX / worldSize) * 180, yToLat(minY), (maxX / worldSize) * 180, yToLat(maxY)],
 			},
 		];
 	}

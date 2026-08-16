@@ -80,6 +80,6 @@ export class TerrainRGBParser {
 
 		// RGB to height 公式（Mapbox Terrain-RGB）
 		// height = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-		return -10000 + (((r << 16) | (g << 8) | b) * 0.1);
+		return -10000 + ((r << 16) | (g << 8) | b) * 0.1;
 	}
 }

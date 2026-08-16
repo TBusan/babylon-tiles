@@ -67,10 +67,7 @@ export function resolveMartiniMaxError(
 	const cellsAtRef = refError / (sRef / gridSize);
 
 	// cells 随层级递减（低层级放宽、高层级收紧），clamp 到 [cellsMin, cellsMax]
-	const cells = Math.min(
-		Math.max(cellsAtRef * Math.pow(2, (refZoom - z) / falloff), cellsMin),
-		cellsMax
-	);
+	const cells = Math.min(Math.max(cellsAtRef * Math.pow(2, (refZoom - z) / falloff), cellsMin), cellsMax);
 
 	// 转回米制 maxError
 	return (cells * worldScale) / gridSize;

@@ -18,22 +18,10 @@ import type { Scene } from '@babylonjs/core/scene';
 
 import type { ISource } from '../source/ISource.js';
 import type { MVTStyleType } from '../source/MVTSource.js';
-import type {
-	ITileMaterialLoader,
-	TileSourceLoadParamsType,
-	ITileLoaderInfo,
-} from './ITileLoaders.js';
+import type { ITileMaterialLoader, TileSourceLoadParamsType, ITileLoaderInfo } from './ITileLoaders.js';
 import { TileMaterial } from '../material/TileMaterial.js';
-import {
-	VectorTileRender,
-	VectorFeature,
-	VectorFeatureTypes,
-	VectorStyle,
-} from '../material/VectorTileRender.js';
-import { TextureCache } from './TextureCache.js';
-
-/** 共享的瓦片 UV 边缘出血量（与 TileLoader 一致） */
-const TILE_UV_BLEED = 2 / 256;
+import { VectorTileRender, VectorFeature, VectorFeatureTypes, VectorStyle } from '../material/VectorTileRender.js';
+import { TextureCache, type TextureCacheImpl } from './TextureCache.js';
 
 /**
  * 获取安全的瓦片 URL 和裁剪范围
@@ -72,10 +60,7 @@ export function getSafeTileUrlAndBounds(
 	const size = 1 / sep;
 	const offsetX = (x % sep) * size;
 	const offsetY = (y % sep) * size;
-	const clipBounds: [number, number, number, number] = [
-		offsetX, offsetY,
-		offsetX + size, offsetY + size,
-	];
+	const clipBounds: [number, number, number, number] = [offsetX, offsetY, offsetX + size, offsetY + size];
 
 	return { url, clipBounds };
 }
@@ -83,19 +68,11 @@ export function getSafeTileUrlAndBounds(
 /**
  * 检查瓦片是否需要边界裁剪（部分超出数据源 bounds）
  */
-export function needsBoundsClip(
-	source: ISource,
-	tileBounds: [number, number, number, number]
-): boolean {
+export function needsBoundsClip(source: ISource, tileBounds: [number, number, number, number]): boolean {
 	if (!source._projectionBounds) return false;
 	const mb = source._projectionBounds;
 	// 瓦片完全在数据源范围内，无需裁剪
-	return !(
-		mb[0] <= tileBounds[0] &&
-		mb[1] <= tileBounds[1] &&
-		mb[2] >= tileBounds[2] &&
-		mb[3] >= tileBounds[3]
-	);
+	return !(mb[0] <= tileBounds[0] && mb[1] <= tileBounds[1] && mb[2] >= tileBounds[2] && mb[3] >= tileBounds[3]);
 }
 
 /**
@@ -132,6 +109,9 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 			throw new Error('ImageTileMaterialLoader: scene not provided in params');
 		}
 
+		// 纹理缓存：TileLoader 分发时按 Engine 作用域填充（getCacheForEngine）；插件直调时回退全局兼容层
+		const cache = params.cache ?? TextureCache;
+
 		// 获取安全的瓦片 URL 和裁剪范围（处理超级别回退）
 		const { url, clipBounds } = getSafeTileUrlAndBounds(source, x, y, z);
 		if (!url) {
@@ -139,24 +119,20 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 		}
 
 		// 阻塞等待纹理下载完成（下载槽位由 TileLoader.load 统一预留）
-		let texture = await this._loadTexture(url, scene, { x, y, z });
+		let texture = await this._loadTexture(url, scene, cache, { x, y, z });
 		if (!texture) {
 			return undefined; // 加载失败/超时：跳过该源，回退背景材质
 		}
 
 		// 如果需要裁剪（超级别回退或边界裁剪）
-		const needsClip =
-			clipBounds[0] !== 0 || clipBounds[1] !== 0 ||
-			clipBounds[2] !== 1 || clipBounds[3] !== 1;
+		const needsClip = clipBounds[0] !== 0 || clipBounds[1] !== 0 || clipBounds[2] !== 1 || clipBounds[3] !== 1;
 		const needBoundClip = needsBoundsClip(source, params.bounds);
 
 		if (needsClip || needBoundClip) {
-			const clipped = await this._clipTexture(
-				texture, url, clipBounds, source, params.bounds, scene
-			);
+			const clipped = await this._clipTexture(texture, url, clipBounds, source, params.bounds, scene);
 			// 裁剪产物替换源纹理：本瓦片不再持有源纹理，交还缓存供其他瓦片复用
 			if (clipped !== texture) {
-				TextureCache.release(texture);
+				cache.release(texture);
 				texture = clipped;
 			}
 		}
@@ -193,12 +169,13 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 	private _loadTexture(
 		url: string,
 		scene: Scene,
+		cache: TextureCacheImpl,
 		coords: { x: number; y: number; z: number }
 	): Promise<Texture | undefined> {
 		// 命中缓存：直接复用已上传 GPU 的纹理，跳过网络下载 + 解码 + 上传
-		const cached = TextureCache.get(url);
+		const cached = cache.get(url);
 		if (cached) {
-			TextureCache.retain(cached);
+			cache.retain(cached);
 			return Promise.resolve(cached);
 		}
 
@@ -221,8 +198,8 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 				settled = true;
 				clearTimeout(timeout);
 				if (texture) {
-					TextureCache.put(url, texture);
-					TextureCache.retain(texture);
+					cache.put(url, texture);
+					cache.retain(texture);
 				}
 				resolve(texture);
 			};
@@ -239,7 +216,7 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 				texture = new Texture(
 					url,
 					scene,
-					true,   // noMipmap
+					true, // noMipmap
 					undefined, // invertY
 					Constants.TEXTURE_BILINEAR_SAMPLINGMODE,
 					succeed,
@@ -250,7 +227,7 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 						fail();
 					}
 				);
-			} catch (e) {
+			} catch {
 				fail();
 			}
 		});
@@ -281,8 +258,7 @@ export class ImageTileMaterialLoader implements ITileMaterialLoader<StandardMate
 			if (!ctx) return texture;
 
 			// 超级别裁剪：从父瓦片中截取子区域
-			const needsSubClip = clipBounds[0] !== 0 || clipBounds[1] !== 0 ||
-				clipBounds[2] !== 1 || clipBounds[3] !== 1;
+			const needsSubClip = clipBounds[0] !== 0 || clipBounds[1] !== 0 || clipBounds[2] !== 1 || clipBounds[3] !== 1;
 
 			if (needsSubClip) {
 				const sx = Math.floor(clipBounds[0] * size);
@@ -402,20 +378,19 @@ export class MVTileMaterialLoader implements ITileMaterialLoader<StandardMateria
 	 */
 	private _ensureDecoder(): Promise<{ VectorTile: any; Pbf: any }> {
 		if (!this._decoderPromise) {
-			this._decoderPromise = Promise.all([
-				import('@mapbox/vector-tile'),
-				import('pbf'),
-			]).then(([vtMod, pbfMod]) => {
-				const vt = vtMod as any;
-				const pbf = (pbfMod as any).default ?? (pbfMod as any);
-				return {
-					VectorTile: vt.VectorTile,
-					Pbf: pbf,
-				};
-			}).catch((e) => {
-				this._decoderPromise = null; // 允许重试
-				throw new Error(`MVT decoder failed to load: ${e}`);
-			});
+			this._decoderPromise = Promise.all([import('@mapbox/vector-tile'), import('pbf')])
+				.then(([vtMod, pbfMod]) => {
+					const vt = vtMod as any;
+					const pbf = (pbfMod as any).default ?? (pbfMod as any);
+					return {
+						VectorTile: vt.VectorTile,
+						Pbf: pbf,
+					};
+				})
+				.catch((e) => {
+					this._decoderPromise = null; // 允许重试
+					throw new Error(`MVT decoder failed to load: ${e}`);
+				});
 		}
 		return this._decoderPromise;
 	}
@@ -442,8 +417,7 @@ export class MVTileMaterialLoader implements ITileMaterialLoader<StandardMateria
 
 		// 支持数据源自定义请求头（防盗链/Accept 协商等）
 		const headers = (source as { headers?: Record<string, string> }).headers;
-		const requestInit =
-			headers && Object.keys(headers).length ? { headers } : undefined;
+		const requestInit = headers && Object.keys(headers).length ? { headers } : undefined;
 
 		const response = await fetch(url, requestInit);
 		if (!response.ok) {
@@ -455,11 +429,8 @@ export class MVTileMaterialLoader implements ITileMaterialLoader<StandardMateria
 
 		// 绘制矢量瓦片到 DynamicTexture（256×256，透明背景）
 		const style = (source as { style?: MVTStyleType }).style;
-		const texture = VectorTileRender.createTexture(
-			scene,
-			`tile-${z}-${x}-${y}-mvt`,
-			256,
-			(ctx) => this._drawTile(ctx as CanvasRenderingContext2D, vectorTile, style, z)
+		const texture = VectorTileRender.createTexture(scene, `tile-${z}-${x}-${y}-mvt`, 256, (ctx) =>
+			this._drawTile(ctx as CanvasRenderingContext2D, vectorTile, style, z)
 		);
 		texture.hasAlpha = true;
 
@@ -487,14 +458,8 @@ export class MVTileMaterialLoader implements ITileMaterialLoader<StandardMateria
 	/**
 	 * 在 Canvas 上下文绘制矢量瓦片所有图层
 	 */
-	private _drawTile(
-		ctx: CanvasRenderingContext2D,
-		vectorTile: any,
-		style: MVTStyleType | undefined,
-		z: number
-	): void {
+	private _drawTile(ctx: CanvasRenderingContext2D, vectorTile: any, style: MVTStyleType | undefined, z: number): void {
 		const width = 256;
-		const height = 256;
 
 		if (style) {
 			// 有 style 时，按样式表逐层绘制（带 minLevel/maxLevel 过滤）
@@ -522,12 +487,7 @@ export class MVTileMaterialLoader implements ITileMaterialLoader<StandardMateria
 	/**
 	 * 绘制单个图层
 	 */
-	private _renderLayer(
-		ctx: CanvasRenderingContext2D,
-		layer: any,
-		style?: VectorStyle,
-		scale: number = 1
-	): void {
+	private _renderLayer(ctx: CanvasRenderingContext2D, layer: any, style?: VectorStyle, scale: number = 1): void {
 		ctx.save();
 		for (let i = 0; i < layer.length; i++) {
 			const feature = layer.feature(i);

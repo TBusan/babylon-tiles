@@ -9,6 +9,7 @@ import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 import type { ISource, BoundsType } from '../source/ISource.js';
 import type { IProjection } from '../projection/IProjection.js';
+import type { TextureCacheImpl } from './TextureCache.js';
 
 // 重新导出 BoundsType 以保持一致性
 export type { BoundsType };
@@ -54,6 +55,12 @@ export type TileSourceLoadParamsType<TSource extends ISource = ISource> = TileLo
 	 * bounds 宽度派生，等价于 projection.mapWidth/2^z），仅按需使用。
 	 */
 	projection?: IProjection;
+	/**
+	 * 纹理缓存（Engine 作用域，见 getCacheForEngine）。由 TileLoader 分发时填充；
+	 * 内置 loader 经此访问缓存（多地图按引擎共享）。插件 loader 未填充时回退全局单例，
+	 * 收尾后移除兼容层。
+	 */
+	cache?: TextureCacheImpl;
 };
 
 /**

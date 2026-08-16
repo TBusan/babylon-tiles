@@ -9,13 +9,8 @@
 
 import { Material } from '@babylonjs/core/Materials/material';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
-import type { Scene } from '@babylonjs/core/scene';
 
-import {
-	ITileMaterialLoader,
-	ITileLoaderInfo,
-	TileSourceLoadParamsType,
-} from '@babylon-tile/lib';
+import { ITileMaterialLoader, ITileLoaderInfo, TileSourceLoadParamsType } from '@babylon-tile/lib';
 
 /** 顶点着色器：输出局部空间法线 */
 const vertexSrc = /* glsl */ `

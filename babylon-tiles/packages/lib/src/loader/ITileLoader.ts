@@ -76,4 +76,11 @@ export interface ITileLoader {
 	 * @param mesh - 要卸载的瓦片网格
 	 */
 	unload(mesh: Mesh): void;
+
+	/**
+	 * 按引用计数释放瓦片网格（材质/纹理/几何统一收口，替代 Tile 内联释放）。
+	 * 可选实现：插件/外部 loader 不实现时，Tile 回退内联释放。
+	 * @param mesh - 要释放的瓦片网格
+	 */
+	releaseMesh?(mesh: Mesh): void;
 }

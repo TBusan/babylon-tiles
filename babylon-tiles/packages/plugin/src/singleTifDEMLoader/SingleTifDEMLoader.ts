@@ -13,14 +13,8 @@
  */
 
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
-import type { Scene } from '@babylonjs/core/scene';
 
-import {
-	ITileGeometryLoader,
-	ITileLoaderInfo,
-	TileGeometry,
-	TileSourceLoadParamsType,
-} from '@babylon-tile/lib';
+import { ITileGeometryLoader, ITileLoaderInfo, TileGeometry, TileSourceLoadParamsType } from '@babylon-tile/lib';
 import UTIF from 'utif';
 import { SingleTifDEMSource } from './SingleTifDEMSource.js';
 import { DEMType, parse } from './parse.js';
@@ -101,8 +95,9 @@ export class SingleTifDEMLoader implements ITileGeometryLoader<Mesh> {
 		const buf = new Float32Array(ifds[0].data.buffer);
 		return {
 			buffer: buf,
-			width: ifds[0].t256[0],
-			height: ifds[0].t257[0],
+			// decodeImage 后 IFD 会写入 width/height（t256/t257 的类型不定，直接读属性更稳）
+			width: ifds[0].width,
+			height: ifds[0].height,
 		};
 	}
 

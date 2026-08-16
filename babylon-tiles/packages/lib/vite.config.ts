@@ -12,7 +12,7 @@ export default defineConfig({
 			entry: 'src/index.ts',
 			name: 'BabylonTile',
 			fileName: 'index',
-			formats: ['es', 'umd']
+			formats: ['es', 'umd'],
 		},
 		rollupOptions: {
 			// 将所有 babylonjs 子路径导入也标记为 external，避免打包两份 Babylon.js
@@ -22,9 +22,9 @@ export default defineConfig({
 			output: {
 				globals: {
 					'@babylonjs/core': 'BABYLON',
-					'@babylonjs/loaders': 'BABYLON'
-				}
-			}
-		}
-	}
+					'@babylonjs/loaders': 'BABYLON',
+				},
+			},
+		},
+	},
 });

@@ -10,6 +10,7 @@
 	},
 	"dependencies": {
 		"@babylon-tile/lib": "workspace:*",
+		"@babylon-tile/plugin": "workspace:*",
 		"@babylonjs/core": "^7.8.1",
 		"@babylonjs/loaders": "^7.8.1",
 		"@babylonjs/gui": "^7.8.1"

@@ -247,7 +247,8 @@ export class GDSource extends TileSource {
 	 *  - cva     → 路网服务 webrd0X…style=8
 	 * 高德路网/矢量服务在低层级（z≤2）返回 179 字节纯白空白瓦片，只有卫星服务有低层级影像。
 	 */
-	public url: string = 'https://{host}0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style={gdstyle}&x={x}&y={y}&z={z}';
+	public url: string =
+		'https://{host}0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style={gdstyle}&x={x}&y={y}&z={z}';
 
 	/**
 	 * 构造函数
@@ -262,9 +263,7 @@ export class GDSource extends TileSource {
 		// 裁剪：原默认 bounds [-85,85] 会让这些瓦片走 Canvas 重编码 → data: 纹理
 		// + 透明材质，既多一次图像解码又改变渲染管线。路网（cva）在南极高纬
 		// 无数据，保持原有 ±85 裁剪行为。
-		this.bounds = options.bounds || (
-			this.style === 'cva' ? [-180, -85, 180, 85] : [-180, -90, 180, 90]
-		);
+		this.bounds = options.bounds || (this.style === 'cva' ? [-180, -85, 180, 85] : [-180, -90, 180, 90]);
 	}
 
 	/**
@@ -573,42 +572,35 @@ export const QuickSources = {
 	/**
 	 * 高德卫星影像
 	 */
-	gaodeImage: (options?: Omit<GDSourceOptions, 'style'>) =>
-		new GDSource({ ...options, style: 'img' }),
+	gaodeImage: (options?: Omit<GDSourceOptions, 'style'>) => new GDSource({ ...options, style: 'img' }),
 
 	/**
 	 * 高德街道地图
 	 */
-	gaodeStreet: (options?: Omit<GDSourceOptions, 'style'>) =>
-		new GDSource({ ...options, style: 'cva' }),
+	gaodeStreet: (options?: Omit<GDSourceOptions, 'style'>) => new GDSource({ ...options, style: 'cva' }),
 
 	/**
 	 * 百度街道地图
 	 */
-	baiduStreet: (options?: Omit<BaiduSourceOptions, 'style'>) =>
-		new BaiduSource({ ...options, style: 'vec' }),
+	baiduStreet: (options?: Omit<BaiduSourceOptions, 'style'>) => new BaiduSource({ ...options, style: 'vec' }),
 
 	/**
 	 * 百度卫星影像
 	 */
-	baiduImage: (options?: Omit<BaiduSourceOptions, 'style'>) =>
-		new BaiduSource({ ...options, style: 'img' }),
+	baiduImage: (options?: Omit<BaiduSourceOptions, 'style'>) => new BaiduSource({ ...options, style: 'img' }),
 
 	/**
 	 * Google 街道地图
 	 */
-	googleStreet: (options?: Omit<GoogleSourceOptions, 'type'>) =>
-		new GoogleSource({ ...options, type: 'm' }),
+	googleStreet: (options?: Omit<GoogleSourceOptions, 'type'>) => new GoogleSource({ ...options, type: 'm' }),
 
 	/**
 	 * Google 卫星影像
 	 */
-	googleSatellite: (options?: Omit<GoogleSourceOptions, 'type'>) =>
-		new GoogleSource({ ...options, type: 's' }),
+	googleSatellite: (options?: Omit<GoogleSourceOptions, 'type'>) => new GoogleSource({ ...options, type: 's' }),
 
 	/**
 	 * Google 地形图
 	 */
-	googleTerrain: (options?: Omit<GoogleSourceOptions, 'type'>) =>
-		new GoogleSource({ ...options, type: 't' }),
+	googleTerrain: (options?: Omit<GoogleSourceOptions, 'type'>) => new GoogleSource({ ...options, type: 't' }),
 };

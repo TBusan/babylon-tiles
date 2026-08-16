@@ -6,15 +6,8 @@
 
 import type { ISource } from '../source/ISource.js';
 import type { ITileGeometryLoader, ITileMaterialLoader } from './ITileLoaders.js';
-import {
-	ImageTileMaterialLoader,
-	MVTileMaterialLoader,
-} from './TileMaterialLoaders.js';
-import {
-	TerrainRGBGeometryLoader,
-	LercGeometryLoader,
-	QuantizedMeshGeometryLoader,
-} from './TileGeometryLoaders.js';
+import { ImageTileMaterialLoader, MVTileMaterialLoader } from './TileMaterialLoaders.js';
+import { TerrainRGBGeometryLoader, LercGeometryLoader, QuantizedMeshGeometryLoader } from './TileGeometryLoaders.js';
 
 const author = { name: 'Babylon-Tile Team' };
 

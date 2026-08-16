@@ -13,7 +13,6 @@ export * from './LoaderFactory.js';
 
 // 具体加载器实现
 export * from './TileLoader.js';
-export * from './TileImageLoader.js';
 export * from './TerrainRGBLoader.js';
 export * from './LercTerrainLoader.js';
 export * from './QuantizedMeshLoader.js';
@@ -26,3 +25,6 @@ export * from './TileGeometryLoaders.js';
 // 抽象基类（插件 loader 继承）
 export * from './TileMaterialLoader.js';
 export * from './TileCanvasLoader.js';
+
+// 纹理缓存（Engine 作用域共享 + 全局兼容层）
+export * from './TextureCache.js';

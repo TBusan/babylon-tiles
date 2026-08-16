@@ -83,10 +83,7 @@ export class EarthMaskMaterial extends ShaderMaterial {
 		this.setColor3('airColor', value);
 	}
 
-	public constructor(
-		scene: Scene,
-		parameters: { bkColor: Color3; airColor: Color3 }
-	) {
+	public constructor(scene: Scene, parameters: { bkColor: Color3; airColor: Color3 }) {
 		super(
 			'earth-mask-material',
 			scene,

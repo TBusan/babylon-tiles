@@ -8,15 +8,10 @@
  * - 典型子类：debug（画坐标）、logo（画署名）。
  */
 
-import type { Scene } from '@babylonjs/core/scene';
 import { Material } from '@babylonjs/core/Materials/material';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 
-import type {
-	ITileMaterialLoader,
-	ITileLoaderInfo,
-	TileSourceLoadParamsType,
-} from './ITileLoaders.js';
+import type { ITileMaterialLoader, ITileLoaderInfo, TileSourceLoadParamsType } from './ITileLoaders.js';
 import { TileMaterial } from '../material/TileMaterial.js';
 
 /**
@@ -86,8 +81,5 @@ export abstract class TileCanvasLoader implements ITileMaterialLoader<Material> 
 	 * @param ctx - Canvas 2D 上下文（256×256）
 	 * @param params - 瓦片加载参数
 	 */
-	protected abstract drawTile(
-		ctx: CanvasRenderingContext2D,
-		params: TileSourceLoadParamsType
-	): void;
+	protected abstract drawTile(ctx: CanvasRenderingContext2D, params: TileSourceLoadParamsType): void;
 }

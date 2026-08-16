@@ -122,7 +122,7 @@ export class TileSource implements ISource {
 		// 常用字符串形式）。原实现只处理数组，字符串形式的长度被当作 0，
 		// 导致模板变量 {s} 为 undefined，strTemplate 直接抛异常。
 		const isArray = Array.isArray(this.subdomains);
-		const subLen = isArray ? this.subdomains.length : (typeof this.subdomains === 'string' ? this.subdomains.length : 0);
+		const subLen = isArray ? this.subdomains.length : typeof this.subdomains === 'string' ? this.subdomains.length : 0;
 		let s: string | undefined;
 		if (subLen > 0) {
 			const index = Math.floor(Math.random() * subLen);

@@ -9,13 +9,8 @@
 
 import { Material } from '@babylonjs/core/Materials/material';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import type { Scene } from '@babylonjs/core/scene';
 
-import {
-	ITileMaterialLoader,
-	ITileLoaderInfo,
-	TileSourceLoadParamsType,
-} from '@babylon-tile/lib';
+import { ITileMaterialLoader, ITileLoaderInfo, TileSourceLoadParamsType } from '@babylon-tile/lib';
 import { TileMaterial } from '@babylon-tile/lib';
 
 /**

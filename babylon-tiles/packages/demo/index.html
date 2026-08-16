@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 	<head>
 		<meta charset="UTF-8" />
@@ -45,6 +45,48 @@
 				font-size: 12px;
 				pointer-events: none;
 			}
+			#toolbar {
+				position: absolute;
+				top: 10px;
+				left: 50%;
+				transform: translateX(-50%);
+				display: flex;
+				gap: 14px;
+				background: rgba(0, 0, 0, 0.7);
+				color: white;
+				padding: 6px 12px;
+				border-radius: 8px;
+				font-family: Arial, sans-serif;
+				font-size: 13px;
+				z-index: 10;
+				white-space: nowrap;
+			}
+			#toolbar .grp {
+				display: flex;
+				align-items: center;
+				gap: 4px;
+			}
+			#toolbar .grp-label {
+				color: #aaa;
+				margin-right: 2px;
+				font-size: 12px;
+			}
+			#toolbar button {
+				background: rgba(255, 255, 255, 0.12);
+				color: white;
+				border: 1px solid rgba(255, 255, 255, 0.25);
+				border-radius: 4px;
+				padding: 3px 8px;
+				cursor: pointer;
+				font-size: 12px;
+			}
+			#toolbar button:hover {
+				background: rgba(255, 255, 255, 0.25);
+			}
+			#toolbar button.active {
+				background: #2b6cb0;
+				border-color: #2b6cb0;
+			}
 			#loading {
 				position: absolute;
 				top: 50%;
@@ -71,6 +113,31 @@
 			<div>FPS: <span id="fps">0</span></div>
 			<div>Tiles: <span id="tiles">0</span></div>
 			<div>Downloading: <span id="downloading">0</span></div>
+		</div>
+		<div id="toolbar">
+			<div class="grp">
+				<span class="grp-label">底图</span>
+				<button data-basemap="img" class="active">影像</button>
+				<button data-basemap="cva">路网</button>
+				<button data-basemap="osm">OSM</button>
+				<button data-basemap="mapbox">Mapbox</button>
+			</div>
+			<div class="grp">
+				<span class="grp-label">地形</span>
+				<button data-terrain="mars3d" class="active">Mars3D</button>
+				<button data-terrain="mapbox">Mapbox</button>
+				<button data-terrain="none">无</button>
+			</div>
+			<div class="grp">
+				<span class="grp-label">矢量</span>
+				<button id="btn-geojson">GeoJSON</button>
+				<button id="btn-vectors">点线面</button>
+			</div>
+			<div class="grp">
+				<span class="grp-label">模型</span>
+				<button id="btn-glb">加载 GLB</button>
+				<button id="btn-glb-remove">移除</button>
+			</div>
 		</div>
 		<div id="loading">Loading...</div>
 

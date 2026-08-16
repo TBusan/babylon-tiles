@@ -33,15 +33,15 @@ const scene = new Scene(engine);
 
 // 创建地图
 const map = TileMap.create({
-    scene,
-    imgSource: new ArcGisSource({
-        serverType: 'World_Imagery',
-        minLevel: 2,
-        maxLevel: 18,
-    }),
-    minLevel: 2,
-    maxLevel: 18,
-    lon0: 0,
+	scene,
+	imgSource: new ArcGisSource({
+		serverType: 'World_Imagery',
+		minLevel: 2,
+		maxLevel: 18,
+	}),
+	minLevel: 2,
+	maxLevel: 18,
+	lon0: 0,
 });
 
 // 将地图添加到场景
@@ -49,12 +49,12 @@ map.parent = scene.createTransformNode('root');
 
 // 渲染循环
 engine.runRenderLoop(() => {
-    // 获取场景中的相机
-    const camera = scene.cameras[0];
-    if (camera) {
-        map.update(camera);
-    }
-    scene.render();
+	// 获取场景中的相机
+	const camera = scene.cameras[0];
+	if (camera) {
+		map.update(camera);
+	}
+	scene.render();
 });
 ```
 
@@ -64,14 +64,14 @@ engine.runRenderLoop(() => {
 import { XYZTileSource, TileMap } from '@babylon-tile/lib';
 
 const map = TileMap.create({
-    scene,
-    imgSource: new XYZTileSource({
-        url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-        dataType: 'image',
-        projectionID: 'EPSG:3857',
-        minLevel: 0,
-        maxLevel: 19,
-    }),
+	scene,
+	imgSource: new XYZTileSource({
+		url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+		dataType: 'image',
+		projectionID: 'EPSG:3857',
+		minLevel: 0,
+		maxLevel: 19,
+	}),
 });
 ```
 
@@ -79,15 +79,15 @@ const map = TileMap.create({
 
 ```typescript
 const map = TileMap.create({
-    scene,
-    imgSource: [
-        new ArcGisSource({ serverType: 'World_Imagery' }),
-        new XYZTileSource({
-            url: 'https://example.com/overlay/{z}/{x}/{y}.png',
-            opacity: 0.7,
-            transparent: true,
-        }),
-    ],
+	scene,
+	imgSource: [
+		new ArcGisSource({ serverType: 'World_Imagery' }),
+		new XYZTileSource({
+			url: 'https://example.com/overlay/{z}/{x}/{y}.png',
+			opacity: 0.7,
+			transparent: true,
+		}),
+	],
 });
 ```
 
@@ -97,11 +97,11 @@ const map = TileMap.create({
 import { DemSource } from '@babylon-tile/lib';
 
 const map = TileMap.create({
-    scene,
-    imgSource: new ArcGisSource({ serverType: 'World_Imagery' }),
-    demSource: new DemSource({
-        url: 'https://example.com/dem/{z}/{x}/{y}.png',
-    }),
+	scene,
+	imgSource: new ArcGisSource({ serverType: 'World_Imagery' }),
+	demSource: new DemSource({
+		url: 'https://example.com/dem/{z}/{x}/{y}.png',
+	}),
 });
 ```
 
@@ -135,11 +135,11 @@ const map = TileMap.create({
 
 ```typescript
 map.addObservable('ready', () => {
-    console.log('Map ready!');
+	console.log('Map ready!');
 });
 
 map.addObservable('tile-loaded', ({ tile }) => {
-    console.log('Tile loaded:', tile.name);
+	console.log('Tile loaded:', tile.name);
 });
 ```
 
@@ -151,13 +151,13 @@ map.addObservable('tile-loaded', ({ tile }) => {
 
 ```typescript
 const source = new XYZTileSource({
-    url: 'https://example.com/{z}/{x}/{y}.png',
-    dataType: 'image',
-    projectionID: 'EPSG:3857',
-    minLevel: 0,
-    maxLevel: 19,
-    opacity: 1,
-    transparent: false,
+	url: 'https://example.com/{z}/{x}/{y}.png',
+	dataType: 'image',
+	projectionID: 'EPSG:3857',
+	minLevel: 0,
+	maxLevel: 19,
+	opacity: 1,
+	transparent: false,
 });
 ```
 
@@ -167,9 +167,9 @@ ArcGIS 地图服务数据源。
 
 ```typescript
 const source = new ArcGisSource({
-    serverType: 'World_Imagery',  // 或其他预定义服务
-    minLevel: 2,
-    maxLevel: 18,
+	serverType: 'World_Imagery', // 或其他预定义服务
+	minLevel: 2,
+	maxLevel: 18,
 });
 
 // 快捷方法

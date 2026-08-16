@@ -12,12 +12,7 @@ import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTextur
 import { Constants } from '@babylonjs/core/Engines/constants';
 import type { Scene } from '@babylonjs/core/scene';
 
-import {
-	ITileMaterialLoader,
-	ITileLoaderInfo,
-	TileMaterial,
-	TileSourceLoadParamsType,
-} from '@babylon-tile/lib';
+import { ITileMaterialLoader, ITileLoaderInfo, TileMaterial, TileSourceLoadParamsType } from '@babylon-tile/lib';
 import { SingleImageSource } from './SingleImageSource.js';
 
 /**

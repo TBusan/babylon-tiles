@@ -49,8 +49,7 @@ const engine = new Engine(canvas, true);
 const BACK_COLOR = new Color4(0.859, 0.941, 1.0, 1.0); // 0xdbf0ff 浅天蓝
 
 // 真实 Mapbox token，刻意保留，不可回退（备用 raster-dem 源）
-const MAPBOX_TOKEN =
-	'pk.eyJ1IjoidGJ1c2FuIiwiYSI6ImNtZjY2emZneDBkY24ybXB4cmpvdmwzNWYifQ.h6tcQ380WN5AW6fZr08how';
+const MAPBOX_TOKEN = 'pk.eyJ1IjoidGJ1c2FuIiwiYSI6ImNtZjY2emZneDBkY24ybXB4cmpvdmwzNWYifQ.h6tcQ380WN5AW6fZr08how';
 
 // 合成 DEM 覆盖范围（经纬度）与相机起始点（104°E 35°N）
 const DEM_BOUNDS: [number, number, number, number] = [102, 33, 106, 37];
@@ -69,7 +68,10 @@ registerDEMLoader(new SingleTifDEMLoader());
  * 生成合成 DEM 高度场（平滑起伏，行 0 为北）
  * 对齐单 TIF 解析语义：buffer 行优先，row 0 对应最北（maxLat）。
  */
-function createSyntheticDEM(width = 512, height = 512): {
+function createSyntheticDEM(
+	width = 512,
+	height = 512
+): {
 	buffer: Float32Array;
 	width: number;
 	height: number;
@@ -118,14 +120,7 @@ const createScene = async (): Promise<Scene> => {
 	scene.clearColor = BACK_COLOR;
 
 	// ======================== 相机（lib 核心 TileMapControls 接管交互） ========================
-	const camera = new ArcRotateCamera(
-		'camera',
-		-Math.PI / 2,
-		Math.PI / 3,
-		12000,
-		CAMERA_TARGET.clone(),
-		scene
-	);
+	const camera = new ArcRotateCamera('camera', -Math.PI / 2, Math.PI / 3, 12000, CAMERA_TARGET.clone(), scene);
 	camera.fov = (70 * Math.PI) / 180;
 
 	// ======================== 光照 ========================
@@ -237,11 +232,11 @@ const createScene = async (): Promise<Scene> => {
 	};
 
 	const toolbar = document.getElementById('toolbar');
-	toolbar?.querySelectorAll<HTMLButtonElement>('button[data-view]').forEach(btn => {
+	toolbar?.querySelectorAll<HTMLButtonElement>('button[data-view]').forEach((btn) => {
 		btn.addEventListener('click', () => {
 			const view = btn.dataset.view!;
 			VIEWS[view]?.();
-			toolbar.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+			toolbar.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
 			btn.classList.add('active');
 		});
 	});
@@ -292,7 +287,7 @@ const createScene = async (): Promise<Scene> => {
 const loadingEl = document.getElementById('loading');
 if (loadingEl) loadingEl.style.display = 'block';
 
-createScene().then(scene => {
+createScene().then((scene) => {
 	engine.runRenderLoop(() => {
 		scene.render();
 		updateStats();

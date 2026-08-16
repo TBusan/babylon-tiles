@@ -103,8 +103,5 @@ export abstract class TileMaterialLoader implements ITileMaterialLoader<Material
 	 * @param params - 加载参数（含 clipBounds）
 	 * @returns 瓦片纹理；返回 undefined 表示无纹理（保持默认材质）
 	 */
-	protected abstract doLoad(
-		url: string,
-		params: TileLoadClipParamsType
-	): Promise<Texture | undefined>;
+	protected abstract doLoad(url: string, params: TileLoadClipParamsType): Promise<Texture | undefined>;
 }

@@ -16,12 +16,12 @@ import { Ray } from '@babylonjs/core/Culling/ray';
 
 import { Tile } from './Tile.js';
 import { TileLoader } from '../loader/TileLoader.js';
-import { TextureCache } from '../loader/TextureCache.js';
 import type { ITileLoader } from '../loader/ITileLoader.js';
 import type { IProjection } from '../projection/IProjection.js';
 import { ProjectionFactory } from '../projection/ProjectionFactory.js';
 import type { ISource } from '../source/ISource.js';
 import { TerrainWorkerPool } from '../loader/WorkerPool.js';
+import { TileMapContext } from './TileContext.js';
 
 /**
  * 地面信息类型
@@ -45,8 +45,8 @@ export interface TileMapEventMap {
 	update: { delta: number };
 	/** 投影改变事件 */
 	'projection-changed': { projection: IProjection };
-	/** 数据源改变事件 */
-	'source-changed': { source: ISource | ISource[] };
+	/** 数据源改变事件（demSource 可为 undefined，故含空值） */
+	'source-changed': { source: ISource | ISource[] | undefined };
 	/** 瓦片创建事件 */
 	'tile-created': { tile: Tile };
 	/** 瓦片加载完成事件 */
@@ -134,6 +134,7 @@ export class TileMap extends BabylonTransformNode {
 
 	/** 加载进度跟踪 */
 	private _wasLoading = false;
+	/** 本轮加载中实际完成的瓦片数（由 tile-loaded 事件累加，而非 tick 次数） */
 	private _loadedCount = 0;
 
 	private _minLevel = 2;
@@ -219,10 +220,7 @@ export class TileMap extends BabylonTransformNode {
 		}
 
 		// 将第一个影像层的投影设置为地图投影
-		this.projection = ProjectionFactory.createFromID(
-			sources[0].projectionID,
-			this.projection.lon0 as -90 | 0 | 90
-		);
+		this.projection = ProjectionFactory.createFromID(sources[0].projectionID, this.projection.lon0 as -90 | 0 | 90);
 		this.loader.imgSource = sources;
 		this._updateSource();
 
@@ -315,6 +313,20 @@ export class TileMap extends BabylonTransformNode {
 		// 创建根瓦片
 		this.rootTile = rootTile || new Tile(0, 0, 0, this._mapScene);
 
+		// 创建地图上下文并绑定到根瓦片：相机/视锥/淡入状态按地图隔离，
+		// 纹理缓存按 Engine 作用域共享（同引擎多地图复用），loader 反引用供瓦片委托释放。
+		const context = TileMapContext.createForEngine(this._mapScene.getEngine());
+		context.loader = this.loader;
+		this.rootTile.setContext(context);
+
+		// 地图持有 loader 引用（引用计数：同一 loader 被多地图共享时，仅最后一个 dispose 释放资源）
+		const tileLoader = this.loader as TileLoader;
+		if (typeof tileLoader.retain === 'function') {
+			tileLoader.retain();
+		}
+		// 地图持有地形 Worker 池引用（归零才 terminate 全部 Worker；池在首次 parse 时懒创建）
+		TerrainWorkerPool.acquire();
+
 		// 设置背景色
 		if (backgroundColor) {
 			this.backgroundColor = backgroundColor;
@@ -352,7 +364,7 @@ export class TileMap extends BabylonTransformNode {
 	 */
 	private _getMaxLevel(): number {
 		let maxLevel = 0;
-		this.imgSource.forEach(source => (maxLevel = Math.max(maxLevel, source.maxLevel)));
+		this.imgSource.forEach((source) => (maxLevel = Math.max(maxLevel, source.maxLevel)));
 		if (this.demSource) {
 			maxLevel = Math.max(maxLevel, this.demSource.maxLevel);
 		}
@@ -369,7 +381,7 @@ export class TileMap extends BabylonTransformNode {
 		// 拉伸地图到投影大小（X-Z 平面，Y 为海拔）
 		this.rootTile.scaling.set(
 			this.projection.mapWidth,
-			this.projection.mapDepth,    // = 1 (flat in Y, which is altitude)
+			this.projection.mapDepth, // = 1 (flat in Y, which is altitude)
 			this.projection.mapHeight
 		);
 		this.rootTile.computeWorldMatrix(true);
@@ -382,15 +394,14 @@ export class TileMap extends BabylonTransformNode {
 	 */
 	private _initEvents(): void {
 		// 监听根瓦片事件并转发（因为事件通过 _root 分发）
-		const events: Array<keyof TileMapEventMap> = [
-			'tile-created',
-			'tile-loaded',
-			'tile-unload',
-			'tile-visible-changed',
-		];
+		const events: Array<keyof TileMapEventMap> = ['tile-created', 'tile-loaded', 'tile-unload', 'tile-visible-changed'];
 
-		events.forEach(eventName => {
+		events.forEach((eventName) => {
 			this.rootTile.addEventListener(eventName as any, (data: any) => {
+				if (eventName === 'tile-loaded') {
+					// 统计本轮实际加载完成的瓦片数（供 loading-progress/complete 上报）
+					this._loadedCount++;
+				}
 				this._notifyObservers(eventName, data);
 			});
 		});
@@ -419,6 +430,17 @@ export class TileMap extends BabylonTransformNode {
 
 		// 控制瓦片树更新速率（与 three-tile 一致：100ms 间隔）
 		if (elapsed > this.updateInterval) {
+			// 每 tick 集中计算视锥体与相机坐标写入地图上下文（瓦片经 context.frustum/
+			// context.cameraWorldPosition 判定，多地图互不串扰）。裸瓦片场景由
+			// Tile.update 根瓦片分支兜底，此处结果一致。
+			const context = this.rootTile.context;
+			context.cameraWorldPosition.copyFrom(camera.globalPosition);
+			// Babylon.js 行向量约定（p·M），合成顺序 V·P（与 Scene.getTransformMatrix 一致）
+			const viewMatrix = camera.getViewMatrix();
+			const projMatrix = camera.getProjectionMatrix();
+			viewMatrix.multiplyToRef(projMatrix, context.vpMatrix);
+			context.frustum.setFromProjectionMatrix(context.vpMatrix);
+
 			this.rootTile.update({
 				camera,
 				loader: this.loader,
@@ -444,6 +466,7 @@ export class TileMap extends BabylonTransformNode {
 	 * 跟踪加载进度并触发相应事件
 	 * 当 downloading 从 0 变为 >0 时触发 loading-start
 	 * 当 downloading 从 >0 变为 0 时触发 loading-complete
+	 * loaded 计数来自 tile-loaded 事件（真实完成的瓦片数），而非 tick 次数
 	 */
 	private _trackLoadingProgress(): void {
 		const downloading = this.loader.downloadingThreads;
@@ -457,8 +480,7 @@ export class TileMap extends BabylonTransformNode {
 			this._notifyObservers('loading-complete', { loaded: this._loadedCount });
 			this._loadedCount = 0;
 		} else if (isLoading) {
-			// 加载进行中
-			this._loadedCount++;
+			// 加载进行中（上报当前已完成的瓦片数）
 			this._notifyObservers('loading-progress', {
 				downloading,
 				loaded: this._loadedCount,
@@ -542,7 +564,7 @@ export class TileMap extends BabylonTransformNode {
 		if (node instanceof Tile) {
 			callback(node);
 		}
-		node.getChildren().forEach(child => {
+		node.getChildren().forEach((child) => {
 			this._traverseTiles(child as BabylonTransformNode, callback);
 		});
 	}
@@ -564,7 +586,7 @@ export class TileMap extends BabylonTransformNode {
 			inFrustum = 0,
 			maxLevel = 0;
 
-		this._traverseTiles(this.rootTile, tile => {
+		this._traverseTiles(this.rootTile, (tile) => {
 			total++;
 			if (tile.isLeaf) {
 				leaf++;
@@ -587,10 +609,7 @@ export class TileMap extends BabylonTransformNode {
 	/**
 	 * 添加事件监听
 	 */
-	public addObservable<K extends keyof TileMapEventMap>(
-		event: K,
-		callback: (data: TileMapEventMap[K]) => void
-	): void {
+	public addObservable<K extends keyof TileMapEventMap>(event: K, callback: (data: TileMapEventMap[K]) => void): void {
 		if (!this._observables.has(event)) {
 			this._observables.set(event, new Observable());
 		}
@@ -628,17 +647,19 @@ export class TileMap extends BabylonTransformNode {
 	 * @param camera 相机
 	 * @returns 地面信息（世界坐标、经纬度、法向量），未命中返回 undefined
 	 */
-	public getLocalInfoFromScreen(
-		screenX: number,
-		screenY: number,
-		camera: Camera
-	): LocationInfo | undefined {
+	public getLocalInfoFromScreen(screenX: number, screenY: number, camera: Camera): LocationInfo | undefined {
 		const scene = this._mapScene;
 		// 使用 Babylon.js 内置 pick 进行射线检测
-		const pickResult = scene.pick(screenX, screenY, (mesh) => {
-			// 只检测地图瓦片网格（排除覆盖层和辅助对象）
-			return mesh.parent instanceof Tile;
-		}, true, camera);
+		const pickResult = scene.pick(
+			screenX,
+			screenY,
+			(mesh) => {
+				// 只检测地图瓦片网格（排除覆盖层和辅助对象）
+				return mesh.parent instanceof Tile;
+			},
+			true,
+			camera
+		);
 
 		if (!pickResult || !pickResult.hit || !pickResult.pickedPoint) {
 			return undefined;
@@ -660,9 +681,13 @@ export class TileMap extends BabylonTransformNode {
 		const direction = new BabylonVector3(0, -1, 0);
 		const ray = new Ray(origin, direction, 20000);
 
-		const pickResult = scene.pickWithRay(ray, (mesh) => {
-			return mesh.parent instanceof Tile;
-		}, true);
+		const pickResult = scene.pickWithRay(
+			ray,
+			(mesh) => {
+				return mesh.parent instanceof Tile;
+			},
+			true
+		);
 
 		if (!pickResult || !pickResult.hit || !pickResult.pickedPoint) {
 			return undefined;
@@ -674,10 +699,7 @@ export class TileMap extends BabylonTransformNode {
 	/**
 	 * 构建地面信息对象
 	 */
-	private _buildLocationInfo(
-		point: BabylonVector3,
-		normal: BabylonVector3 | null
-	): LocationInfo {
+	private _buildLocationInfo(point: BabylonVector3, normal: BabylonVector3 | null): LocationInfo {
 		const geo = this.world2geo(point);
 		return {
 			point: point.clone(),
@@ -687,28 +709,30 @@ export class TileMap extends BabylonTransformNode {
 	}
 
 	/**
-	 * 释放地图资源（包括瓦片树、事件、加载器材质、Worker 池）
+	 * 释放地图资源（包括瓦片树、事件、加载器引用、Worker 池引用）。
+	 * 纹理缓存为 Engine 作用域，不随单张地图销毁——同引擎其他地图继续复用。
 	 */
 	public dispose(): void {
-		// 卸载瓦片树
+		// 取消进行中的淡入（恢复材质不透明并注销 observer，避免 advance 触碰已释放材质）
+		this.rootTile.context.fade.dispose();
+
+		// 卸载瓦片树（瓦片经 loader.releaseMesh 按引用计数释放各自材质/纹理/几何）
 		this.rootTile.unload();
 		this.rootTile.dispose();
 
 		// 清理所有 Observable
-		this._observables.forEach(observable => observable.clear());
+		this._observables.forEach((observable) => observable.clear());
 		this._observables.clear();
 
-		// 释放加载器中的共享材质
+		// 释放加载器引用（引用计数归零才 dispose 背景材质与残留共享材质；
+		// 同一 loader 被多地图共享时仅最后一个持有者真正释放）
 		const loader = this.loader as TileLoader;
-		if (loader.backgroundMaterial) {
-			loader.backgroundMaterial.dispose();
+		if (typeof loader.release === 'function') {
+			loader.release();
 		}
 
-		// 释放全局纹理缓存（此时瓦片树已卸载，缓存中的纹理不再被引用）
-		TextureCache.clear();
-
-		// 释放全局 Worker 池
-		TerrainWorkerPool.dispose();
+		// 释放 Worker 池引用（归零才 terminate 全部 Worker 并释放 Blob URL）
+		TerrainWorkerPool.release();
 
 		// 调用父类 dispose（释放 TransformNode）
 		super.dispose();

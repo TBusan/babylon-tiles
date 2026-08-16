@@ -29,6 +29,8 @@ export * from './tile/util.js';
 export * from './tile/FrustumEx.js';
 export * from './tile/Tile.js';
 export * from './tile/TileMap.js';
+export * from './tile/TileContext.js';
+export * from './tile/TileFade.js';
 
 // 导出相机控制相关（核心：相机控制/鼠标交互）
 export * from './controls/index.js';

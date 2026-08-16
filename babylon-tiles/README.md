@@ -112,31 +112,31 @@ babylon-tiles/
 
 ## 🎯 核心特性实现状态
 
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| 投影系统 | ✅ | WGS84 和 Web Mercator 投影 |
-| 数据源 | ✅ | XYZ 和 ArcGIS 数据源 |
-| 瓦片几何体 | ✅ | 平面和地形瓦片，支持裙边 |
-| 材质系统 | ✅ | 标准材质和 PBR 材质 |
-| LOD 系统 | ✅ | 四叉树 LOD 评估 |
-| 瓦片加载 | ✅ | 异步加载，并发控制 |
-| 坐标转换 | ✅ | 地理/地图/世界坐标互转 |
-| 事件系统 | ✅ | 瓦片加载、创建等事件 |
-| 相机控制 | ⏳ | 待实现 |
-| 性能优化 | ⏳ | 基础完成，深度优化待续 |
+| 功能       | 状态 | 说明                       |
+| ---------- | ---- | -------------------------- |
+| 投影系统   | ✅   | WGS84 和 Web Mercator 投影 |
+| 数据源     | ✅   | XYZ 和 ArcGIS 数据源       |
+| 瓦片几何体 | ✅   | 平面和地形瓦片，支持裙边   |
+| 材质系统   | ✅   | 标准材质和 PBR 材质        |
+| LOD 系统   | ✅   | 四叉树 LOD 评估            |
+| 瓦片加载   | ✅   | 异步加载，并发控制         |
+| 坐标转换   | ✅   | 地理/地图/世界坐标互转     |
+| 事件系统   | ✅   | 瓦片加载、创建等事件       |
+| 相机控制   | ⏳   | 待实现                     |
+| 性能优化   | ⏳   | 基础完成，深度优化待续     |
 
 ## 🔧 Babylon.js API 对照
 
-| Three.js | Babylon.js | 状态 |
-|----------|------------|------|
-| `THREE.Object3D` | `TransformNode` | ✅ |
-| `THREE.Mesh` | `Mesh` | ✅ |
-| `THREE.Box3` | `BoundingBox` | ✅ |
-| `THREE.BufferGeometry` | `VertexData` | ✅ |
-| `THREE.Material` | `Material` | ✅ |
-| `THREE.EventDispatcher` | `Observable` | ✅ |
-| `THREE.Frustum` | `Frustum` | ⏳ |
-| `THREE.Raycaster` | `Ray` | ⏳ |
+| Three.js                | Babylon.js      | 状态 |
+| ----------------------- | --------------- | ---- |
+| `THREE.Object3D`        | `TransformNode` | ✅   |
+| `THREE.Mesh`            | `Mesh`          | ✅   |
+| `THREE.Box3`            | `BoundingBox`   | ✅   |
+| `THREE.BufferGeometry`  | `VertexData`    | ✅   |
+| `THREE.Material`        | `Material`      | ✅   |
+| `THREE.EventDispatcher` | `Observable`    | ✅   |
+| `THREE.Frustum`         | `Frustum`       | ⏳   |
+| `THREE.Raycaster`       | `Ray`           | ⏳   |
 
 ## 📊 代码统计
 
@@ -148,6 +148,7 @@ babylon-tiles/
 ## 🚀 下一步计划
 
 ### 高优先级
+
 1. **相机控制系统** - 实现 TileMapControls
    - MAP 模式（地图式操作）
    - ORBIT 模式（3D 编辑器式操作）
@@ -162,6 +163,7 @@ babylon-tiles/
    - 地形网格生成
 
 ### 中优先级
+
 4. **交互功能**
    - 鼠标拾取（Picking）
    - 坐标显示
@@ -183,23 +185,23 @@ babylon-tiles/
 import { TileMap, ArcGisSource } from '@babylon-tile/lib';
 
 const map = TileMap.create({
-    scene,
-    imgSource: new ArcGisSource({
-        serverType: 'World_Imagery',
-    }),
-    minLevel: 2,
-    maxLevel: 18,
+	scene,
+	imgSource: new ArcGisSource({
+		serverType: 'World_Imagery',
+	}),
+	minLevel: 2,
+	maxLevel: 18,
 });
 
 // 事件监听
 map.addObservable('ready', () => {
-    console.log('地图已就绪');
+	console.log('地图已就绪');
 });
 
 // 更新地图
 engine.runRenderLoop(() => {
-    map.update(camera);
-    scene.render();
+	map.update(camera);
+	scene.render();
 });
 ```
 

@@ -20,11 +20,7 @@ import type { TileMap, ISource } from '@babylon-tile/lib';
  * @param camera - 相机
  * @returns 地理坐标 (lon, lat, height)，未命中返回 undefined
  */
-export function getLocalFromMouse(
-	mouseEvent: MouseEvent,
-	map: TileMap,
-	camera: Camera
-): Vector3 | undefined {
+export function getLocalFromMouse(mouseEvent: MouseEvent, map: TileMap, camera: Camera): Vector3 | undefined {
 	const { currentTarget, offsetX, offsetY } = mouseEvent;
 	if (currentTarget instanceof HTMLElement) {
 		// lib getLocalInfoFromScreen 直接接收画布像素坐标
@@ -42,13 +38,17 @@ export function getLocalFromMouse(
 export function getAttributions(map: TileMap): string[] {
 	const attributions = new Set<string>();
 	const imgSources = map.imgSource;
-	imgSources.forEach(source => {
+	imgSources.forEach((source) => {
 		const attr = getAttribution(source);
-		attr && attributions.add(attr);
+		if (attr) {
+			attributions.add(attr);
+		}
 	});
 	if (map.demSource) {
 		const attr = getAttribution(map.demSource);
-		attr && attributions.add(attr);
+		if (attr) {
+			attributions.add(attr);
+		}
 	}
 	return Array.from(attributions);
 }

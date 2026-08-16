@@ -62,7 +62,12 @@ export class Martini {
 
 		for (let i = 0; i < this.numTriangles; i++) {
 			let id = i + 2;
-			let ax = 0, ay = 0, bx = 0, by = 0, cx = 0, cy = 0;
+			let ax = 0,
+				ay = 0,
+				bx = 0,
+				by = 0,
+				cx = 0,
+				cy = 0;
 
 			if (id & 1) {
 				bx = by = cx = tileSize; // 左下三角形
@@ -76,12 +81,16 @@ export class Martini {
 
 				if (id & 1) {
 					// 左半部分
-					bx = ax; by = ay;
-					ax = cx; ay = cy;
+					bx = ax;
+					by = ay;
+					ax = cx;
+					ay = cy;
 				} else {
 					// 右半部分
-					ax = bx; ay = by;
-					bx = cx; by = cy;
+					ax = bx;
+					ay = by;
+					bx = cx;
+					by = cy;
 				}
 				cx = mx;
 				cy = my;
@@ -122,9 +131,7 @@ export class MartiniTile {
 		const size = martini.gridSize;
 
 		if (terrain.length !== size * size) {
-			throw new Error(
-				`Expected terrain data of length ${size * size} (${size} x ${size}), got ${terrain.length}.`
-			);
+			throw new Error(`Expected terrain data of length ${size * size} (${size} x ${size}), got ${terrain.length}.`);
 		}
 
 		this.terrain = terrain;
@@ -163,11 +170,7 @@ export class MartiniTile {
 				// 大三角形：累积子三角形误差
 				const leftChildIndex = ((ay + cy) >> 1) * size + ((ax + cx) >> 1);
 				const rightChildIndex = ((by + cy) >> 1) * size + ((bx + cx) >> 1);
-				errors[middleIndex] = Math.max(
-					errors[middleIndex],
-					errors[leftChildIndex],
-					errors[rightChildIndex]
-				);
+				errors[middleIndex] = Math.max(errors[middleIndex], errors[leftChildIndex], errors[rightChildIndex]);
 			}
 		}
 	}
@@ -193,11 +196,19 @@ export class MartiniTile {
 		// 相邻瓦片共享边上的网格点物理重合、高程一致（同一 DEM 插值），两侧边界
 		// 顶点集因此严格一致 → 无裂缝/台阶。通过"接触边界即细分"而非修改误差图
 		// 实现，避免误差沿父三角形向上传播导致整个瓦片细分（顶点爆炸）。
-		const touchesBoundary = (
-			ax: number, ay: number, bx: number, by: number, cx: number, cy: number
-		): boolean =>
-			ax === 0 || bx === 0 || cx === 0 || ax === max || bx === max || cx === max ||
-			ay === 0 || by === 0 || cy === 0 || ay === max || by === max || cy === max;
+		const touchesBoundary = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): boolean =>
+			ax === 0 ||
+			bx === 0 ||
+			cx === 0 ||
+			ax === max ||
+			bx === max ||
+			cx === max ||
+			ay === 0 ||
+			by === 0 ||
+			cy === 0 ||
+			ay === max ||
+			by === max ||
+			cy === max;
 
 		indices.fill(0);
 
@@ -289,9 +300,9 @@ export class MartiniTile {
 		const pixelIdx = (tileSize - gridY) * this.martini.gridSize + gridX;
 
 		// 位置：归一化到 [-0.5, 0.5] 范围
-		positions[3 * index + 0] = gridX / tileSize - 0.5;        // X: 水平
-		positions[3 * index + 1] = this.terrain[pixelIdx];         // Y: 海拔（Babylon up-axis）
-		positions[3 * index + 2] = gridY / tileSize - 0.5;        // Z: 水平
+		positions[3 * index + 0] = gridX / tileSize - 0.5; // X: 水平
+		positions[3 * index + 1] = this.terrain[pixelIdx]; // Y: 海拔（Babylon up-axis）
+		positions[3 * index + 2] = gridY / tileSize - 0.5; // Z: 水平
 
 		// UV 坐标：[0, 1] 范围，v=0 在南（贴图北端贴北）
 		uvs[2 * index + 0] = gridX / tileSize;

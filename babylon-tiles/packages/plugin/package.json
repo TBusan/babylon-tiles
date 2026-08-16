@@ -39,8 +39,8 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@babylonjs/core": "^7.8.1",
 		"@babylon-tile/lib": "workspace:*",
+		"@babylonjs/core": "^7.8.1",
 		"@mapbox/vector-tile": "^2.0.3",
 		"geojson-vt": "^4.0.2",
 		"pbf": "^4.0.1",
@@ -49,6 +49,7 @@
 	"devDependencies": {
 		"@types/geojson-vt": "^3.2.5",
 		"@types/node": "^20.11.5",
+		"@types/utif": "^3.0.6",
 		"typescript": "^5.3.3",
 		"vite": "^5.0.12",
 		"vite-plugin-dts": "^3.7.3"

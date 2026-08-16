@@ -4,8 +4,13 @@
 	"private": true,
 	"description": "Babylon.js 瓦片地图库",
 	"scripts": {
-		"build": "pnpm -r --filter './packages/**' build",
-		"dev": "pnpm --filter './packages/demo' dev"
+		"build": "pnpm -r build",
+		"dev": "pnpm --filter './packages/demo' dev",
+		"typecheck": "pnpm -r exec tsc --noEmit",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"lint": "eslint .",
+		"lint:fix": "eslint . --fix"
 	},
 	"keywords": [
 		"babylonjs",
@@ -17,6 +22,11 @@
 	"author": "Babylon-Tile Team",
 	"license": "MIT",
 	"devDependencies": {
-		"typescript": "^5.3.3"
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.8.0",
+		"eslint-config-prettier": "^10.1.8",
+		"prettier": "^3.9.6",
+		"typescript": "^5.3.3",
+		"typescript-eslint": "^8.66.0"
 	}
 }

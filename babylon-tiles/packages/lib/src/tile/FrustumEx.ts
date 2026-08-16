@@ -16,15 +16,18 @@ import type { BoundingBox } from '@babylonjs/core/Culling/boundingBox';
  */
 function findIntersectionPoint(plane1: Plane, plane2: Plane, plane3: Plane, target: Vector3): Vector3 {
 	// 构建系数矩阵 A（法线作为行）
-	const a11 = plane1.normal.x, a12 = plane1.normal.y, a13 = plane1.normal.z;
-	const a21 = plane2.normal.x, a22 = plane2.normal.y, a23 = plane2.normal.z;
-	const a31 = plane3.normal.x, a32 = plane3.normal.y, a33 = plane3.normal.z;
+	const a11 = plane1.normal.x,
+		a12 = plane1.normal.y,
+		a13 = plane1.normal.z;
+	const a21 = plane2.normal.x,
+		a22 = plane2.normal.y,
+		a23 = plane2.normal.z;
+	const a31 = plane3.normal.x,
+		a32 = plane3.normal.y,
+		a33 = plane3.normal.z;
 
 	// 行列式
-	const det =
-		a11 * (a22 * a33 - a23 * a32) -
-		a12 * (a21 * a33 - a23 * a31) +
-		a13 * (a21 * a32 - a22 * a31);
+	const det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
 
 	if (Math.abs(det) < 1e-10) {
 		target.set(0, 0, 0);
@@ -32,13 +35,15 @@ function findIntersectionPoint(plane1: Plane, plane2: Plane, plane3: Plane, targ
 	}
 
 	// 常数项向量
-	const b1 = -plane1.d, b2 = -plane2.d, b3 = -plane3.d;
+	const b1 = -plane1.d,
+		b2 = -plane2.d,
+		b3 = -plane3.d;
 
 	// Cramer法则求解
 	const invDet = 1 / det;
-	target.x = ((b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3)) * invDet);
-	target.y = ((a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31)) * invDet);
-	target.z = ((a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31)) * invDet);
+	target.x = (b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3)) * invDet;
+	target.y = (a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31)) * invDet;
+	target.z = (a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31)) * invDet;
 
 	return target;
 }
@@ -71,54 +76,30 @@ export class FrustumEx {
 	 */
 	setFromProjectionMatrix(m: Matrix): this {
 		const { planes } = this;
-		const me = m.toArray(); // Babylon.js 行主序: me[row*4+col]
-		// 列向量: col_k = (me[k], me[4+k], me[8+k], me[12+k])，col3 即 w 列
+		const me = m.m; // Babylon.js 行主序 Float32Array: me[row*4+col]，避免 toArray() 每次分配
 
-		// 平面方程: a*x + b*y + c*z + d = 0
-		// Plane(a, b, c, d) 其中 normal = (a, b, c)
-
-		// 左平面: col3 + col0
-		planes[0] = new Plane(
-			me[3] + me[0], me[7] + me[4], me[11] + me[8], me[15] + me[12]
-		);
-		// 右平面: col3 - col0
-		planes[1] = new Plane(
-			me[3] - me[0], me[7] - me[4], me[11] - me[8], me[15] - me[12]
-		);
-		// 下平面: col3 + col1
-		planes[2] = new Plane(
-			me[3] + me[1], me[7] + me[5], me[11] + me[9], me[15] + me[13]
-		);
-		// 上平面: col3 - col1
-		planes[3] = new Plane(
-			me[3] - me[1], me[7] - me[5], me[11] - me[9], me[15] - me[13]
-		);
-		// 近平面: col3 + col2
-		planes[4] = new Plane(
-			me[3] + me[2], me[7] + me[6], me[11] + me[10], me[15] + me[14]
-		);
-		// 远平面: col3 - col2
-		planes[5] = new Plane(
-			me[3] - me[2], me[7] - me[6], me[11] - me[10], me[15] - me[14]
-		);
-
-		// 归一化所有平面
-		for (const plane of planes) {
-			const len = Math.sqrt(
-				plane.normal.x * plane.normal.x +
-				plane.normal.y * plane.normal.y +
-				plane.normal.z * plane.normal.z
-			);
-			if (len > 0) {
-				plane.normal.x /= len;
-				plane.normal.y /= len;
-				plane.normal.z /= len;
-				plane.d /= len;
-			}
-		}
+		// 就地更新已有 Plane（避免每次更新分配 6 个 Plane 对象）
+		this._setPlane(planes[0], me[3] + me[0], me[7] + me[4], me[11] + me[8], me[15] + me[12]); // 左: col3 + col0
+		this._setPlane(planes[1], me[3] - me[0], me[7] - me[4], me[11] - me[8], me[15] - me[12]); // 右: col3 - col0
+		this._setPlane(planes[2], me[3] + me[1], me[7] + me[5], me[11] + me[9], me[15] + me[13]); // 下: col3 + col1
+		this._setPlane(planes[3], me[3] - me[1], me[7] - me[5], me[11] - me[9], me[15] - me[13]); // 上: col3 - col1
+		this._setPlane(planes[4], me[3] + me[2], me[7] + me[6], me[11] + me[10], me[15] + me[14]); // 近: col3 + col2
+		this._setPlane(planes[5], me[3] - me[2], me[7] - me[6], me[11] - me[10], me[15] - me[14]); // 远: col3 - col2
 
 		this.calculateFrustumPoints();
 		return this;
+	}
+
+	/** 就地写入并归一化一个平面（零分配） */
+	private _setPlane(plane: Plane, a: number, b: number, c: number, d: number): void {
+		const len = Math.sqrt(a * a + b * b + c * c);
+		if (len > 0) {
+			plane.normal.set(a / len, b / len, c / len);
+			plane.d = d / len;
+		} else {
+			plane.normal.set(a, b, c);
+			plane.d = d;
+		}
 	}
 
 	/**
@@ -126,20 +107,14 @@ export class FrustumEx {
 	 */
 	private calculateFrustumPoints(): void {
 		const { planes, points } = this;
-		const planeIntersections = [
-			[planes[0], planes[3], planes[4]], // 近左上
-			[planes[1], planes[3], planes[4]], // 近右上
-			[planes[0], planes[2], planes[4]], // 近左下
-			[planes[1], planes[2], planes[4]], // 近右下
-			[planes[0], planes[3], planes[5]], // 远左上
-			[planes[1], planes[3], planes[5]], // 远右上
-			[planes[0], planes[2], planes[5]], // 远左下
-			[planes[1], planes[2], planes[5]], // 远右下
-		];
-
-		planeIntersections.forEach((triple, index) => {
-			findIntersectionPoint(triple[0], triple[1], triple[2], points[index]);
-		});
+		findIntersectionPoint(planes[0], planes[3], planes[4], points[0]); // 近左上
+		findIntersectionPoint(planes[1], planes[3], planes[4], points[1]); // 近右上
+		findIntersectionPoint(planes[0], planes[2], planes[4], points[2]); // 近左下
+		findIntersectionPoint(planes[1], planes[2], planes[4], points[3]); // 近右下
+		findIntersectionPoint(planes[0], planes[3], planes[5], points[4]); // 远左上
+		findIntersectionPoint(planes[1], planes[3], planes[5], points[5]); // 远右上
+		findIntersectionPoint(planes[0], planes[2], planes[5], points[6]); // 远左下
+		findIntersectionPoint(planes[1], planes[2], planes[5], points[7]); // 远右下
 	}
 
 	/**

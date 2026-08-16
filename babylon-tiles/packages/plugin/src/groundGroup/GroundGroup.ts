@@ -41,7 +41,9 @@ export class GroundGroup extends TransformNode {
 
 		map.addObservable('tile-loaded', () => {
 			setTimeout(() => {
-				this.updateAllTiles && this.update();
+				if (this.updateAllTiles) {
+					this.update();
+				}
 			}, 10);
 		});
 		map.addObservable('loading-complete', () => {
@@ -57,7 +59,7 @@ export class GroundGroup extends TransformNode {
 	 * @param objects - 模型
 	 */
 	public add(...objects: TransformNode[]): this {
-		objects.forEach(obj => {
+		objects.forEach((obj) => {
 			obj.setParent(this, true);
 		});
 		this.update(...objects);
@@ -70,11 +72,11 @@ export class GroundGroup extends TransformNode {
 	 */
 	public update(...objects: TransformNode[]): this {
 		if (objects.length === 0) {
-			this.getChildren().forEach(child => {
+			this.getChildren().forEach((child) => {
 				clampToGround(this.map, child as TransformNode);
 			});
 		} else {
-			objects.forEach(obj => clampToGround(this.map, obj));
+			objects.forEach((obj) => clampToGround(this.map, obj));
 		}
 		return this;
 	}
@@ -108,7 +110,7 @@ function getWorldBottomY(obj: TransformNode): number {
 		return bv.min.y;
 	}
 	let minY = Infinity;
-	obj.getChildMeshes().forEach(mesh => {
+	obj.getChildMeshes().forEach((mesh) => {
 		const bv = mesh.getHierarchyBoundingVectors();
 		if (bv.min.y < minY) minY = bv.min.y;
 	});

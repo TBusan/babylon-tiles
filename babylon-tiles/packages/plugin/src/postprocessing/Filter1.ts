@@ -100,9 +100,7 @@ export class Filter1 {
 	}
 	public set enable(value: boolean) {
 		this._enabled = value;
-		const pps = (
-			this._camera as unknown as { _postProcesses: (PostProcess | null)[] }
-		)._postProcesses;
+		const pps = (this._camera as unknown as { _postProcesses: (PostProcess | null)[] })._postProcesses;
 		const idx = pps.indexOf(this._postProcess);
 		if (value) {
 			if (idx === -1) pps.push(this._postProcess);
@@ -130,7 +128,7 @@ export class Filter1 {
 			engine,
 			false
 		);
-		this._postProcess.onApply = effect => {
+		this._postProcess.onApply = (effect) => {
 			effect.setFloat('hue', this._hue);
 			effect.setFloat('saturation', this._saturation);
 			effect.setFloat('brightness', this._brightness);

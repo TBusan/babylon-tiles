@@ -5,17 +5,19 @@
  */
 
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import type { Material } from '@babylonjs/core/Materials/material';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
-import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Scene } from '@babylonjs/core/scene';
 
 import type { ITileLoader, TileLoadParams } from './ITileLoader.js';
+import type { Tile } from '../tile/Tile.js';
 import type { IProjection } from '../projection/IProjection.js';
 import type { ISource } from '../source/ISource.js';
 import { TileGeometry } from '../geometry/TileGeometry.js';
 import { TileMaterial } from '../material/TileMaterial.js';
-import { TextureCache } from './TextureCache.js';
+import type { TextureCacheImpl } from './TextureCache.js';
+import { getCacheForEngine } from './TextureCache.js';
 import { loaderFactory } from './LoaderFactory.js';
 
 /**
@@ -36,13 +38,22 @@ export class TileLoader implements ITileLoader {
 	/** 等待下载槽位的队列（FIFO，由 _releaseSlot 唤醒） */
 	private _slotWaiters: Array<() => void> = [];
 
+	/** 纹理缓存（Engine 作用域；内置 loader 经 params.cache 共享） */
+	private readonly _textureCache: TextureCacheImpl;
+
+	/** 材质引用计数（acquire/release；count>1 视为共享，不释放/不淡入） */
+	private readonly _materialUsers = new Map<Material, number>();
+
+	/** 持有本 loader 的地图数（背景材质生命周期：归零才 dispose） */
+	private _mapUsers = 0;
+
+	/** 是否已 dispose（防重复释放） */
+	private _disposed = false;
+
 	private _bounds: [number, number, number, number] = [-180, -85, 180, 85];
 
 	/** 场景 */
 	private readonly _scene: Scene;
-
-	/** 错误材质 */
-	private readonly _errorMaterial: StandardMaterial;
 
 	/** 背景材质 */
 	public readonly backgroundMaterial: StandardMaterial;
@@ -54,21 +65,18 @@ export class TileLoader implements ITileLoader {
 	 * 构造函数
 	 * @param scene - Babylon.js 场景
 	 * @param projection - 投影对象
+	 * @param textureCache - 纹理缓存（默认按 Engine 作用域获取；同引擎多图共享）
 	 */
-	constructor(scene: Scene, projection: IProjection) {
+	constructor(scene: Scene, projection: IProjection, textureCache?: TextureCacheImpl) {
 		this._scene = scene;
 		this._projection = projection;
+		this._textureCache = textureCache ?? getCacheForEngine(scene.getEngine());
 
 		// 确保内置加载器（image/mvt/terrain-rgb/lerc/quantized-mesh）已注册。
 		// 幂等：用户先注册的同名 dataType 自定义 loader 不会被覆盖。
 		loaderFactory.ensureBuiltinLoaders();
 
-		// 创建错误材质
-		this._errorMaterial = new StandardMaterial('error-material', scene);
-		this._errorMaterial.diffuseColor = new Color3(1, 0, 0);
-		this._errorMaterial.alpha = 0; // 透明，不显示
-
-		// 创建背景材质
+		// 创建背景材质（loader 永久持有；见 releaseMesh/_releaseMaterial 背景材质特判）
 		this.backgroundMaterial = TileMaterial.createBackgroundMaterial(scene);
 	}
 
@@ -143,10 +151,8 @@ export class TileLoader implements ITileLoader {
 	 */
 	private _updateImgProjBounds(): void {
 		const proj = this._projection;
-		this._imgSource.forEach(source => {
-			source._projectionBounds = proj.getProjBoundsFromLonLat(
-				source.bounds || this._bounds
-			);
+		this._imgSource.forEach((source) => {
+			source._projectionBounds = proj.getProjBoundsFromLonLat(source.bounds || this._bounds);
 		});
 	}
 
@@ -156,9 +162,7 @@ export class TileLoader implements ITileLoader {
 	private _updateDemProjBounds(): void {
 		const proj = this._projection;
 		if (this._demSource) {
-			this._demSource._projectionBounds = proj.getProjBoundsFromLonLat(
-				this._demSource.bounds || this._bounds
-			);
+			this._demSource._projectionBounds = proj.getProjBoundsFromLonLat(this._demSource.bounds || this._bounds);
 		}
 	}
 
@@ -169,7 +173,11 @@ export class TileLoader implements ITileLoader {
 	 * @param z 瓦片层级
 	 * @returns 变换后的坐标和边界
 	 */
-	private getTileCoords(x: number, y: number, z: number): {
+	private getTileCoords(
+		x: number,
+		y: number,
+		z: number
+	): {
 		x: number;
 		y: number;
 		z: number;
@@ -196,7 +204,7 @@ export class TileLoader implements ITileLoader {
 	 * @param params - 瓦片加载参数或 Tile 对象
 	 * @returns Promise<Mesh> 瓦片网格（可能包含覆盖层子节点）
 	 */
-	public async load(params: TileLoadParams | any): Promise<Mesh> {
+	public async load(params: TileLoadParams | Tile): Promise<Mesh> {
 		// 同步预留下载槽位（在任何 await 之前），将并发限制在 maxThreads 以内。
 		// 之前的实现把 _downloadingThreads++ 放在 loadMaterial 的 await 之后，
 		// 导致一帧内所有无模型瓦片在同一同步遍历中通过 _needsLoad 门槛后，
@@ -261,7 +269,7 @@ export class TileLoader implements ITileLoader {
 	 */
 	public async update(
 		mesh: Mesh,
-		params: TileLoadParams | any,
+		params: TileLoadParams | Tile,
 		updateMaterial: boolean,
 		updateGeometry: boolean
 	): Promise<Mesh> {
@@ -273,72 +281,41 @@ export class TileLoader implements ITileLoader {
 		let resultMesh = mesh;
 		let materials: Material[] | undefined;
 
-		// 先加载新材质（若需要），确保后续更新失败时旧状态仍完整
-		if (updateMaterial) {
-			materials = await this.loadMaterial(coords);
-		}
-
-		if (updateGeometry) {
-			// 创建新网格替代旧网格，避免直接操作 _geometry 私有属性
-			const newMesh = await this.loadGeometry(coords);
-			newMesh.setParent(mesh.parent);
-			newMesh.position.copyFrom(mesh.position);
-			newMesh.scaling.copyFrom(mesh.scaling);
-			newMesh.computeWorldMatrix(true);
-
-			// 释放旧网格：base 材质共享时保留，其余材质/纹理与 overlays 一并释放
-			const sharedBase =
-				mesh.material !== undefined &&
-				mesh.material !== null &&
-				mesh.material !== this.backgroundMaterial &&
-				this._isMaterialUsedElsewhere(mesh.material, mesh);
-			if (mesh.material && mesh.material !== this.backgroundMaterial && !sharedBase) {
-				const textures = mesh.material.getActiveTextures();
-				for (const tex of textures) {
-					TextureCache.release(tex);
-				}
-				mesh.material.dispose();
+		// update 同样会触发纹理/几何网络下载，需与 load 一致地占用下载槽位，
+		// 否则会绕过 maxThreads 并发限制
+		await this._acquireSlot();
+		try {
+			// 先加载新材质（若需要），确保后续更新失败时旧状态仍完整
+			if (updateMaterial) {
+				materials = await this.loadMaterial(coords);
 			}
-			// 覆盖层子网格的材质/纹理一并释放（mesh.dispose 不负责材质，避免误伤缓存纹理）
-			for (const child of mesh.getChildMeshes()) {
-				if (child.material) {
-					const textures = child.material.getActiveTextures();
-					for (const tex of textures) {
-						TextureCache.release(tex);
-					}
-					child.material.dispose();
+
+			if (updateGeometry) {
+				// 创建新网格替代旧网格，避免直接操作 _geometry 私有属性
+				const newMesh = await this.loadGeometry(coords);
+				newMesh.setParent(mesh.parent);
+				newMesh.position.copyFrom(mesh.position);
+				newMesh.scaling.copyFrom(mesh.scaling);
+				newMesh.computeWorldMatrix(true);
+
+				// 释放旧网格：材质经引用计数（共享材质 count>1 保留），几何/子网格随 dispose 释放
+				this.releaseMesh(mesh);
+
+				resultMesh = newMesh;
+			} else if (updateMaterial) {
+				// 仅更新材质：释放旧 base 材质（共享材质保留）与旧 overlays 子网格
+				this._releaseMaterialsFromMesh(mesh);
+				for (const child of [...mesh.getChildMeshes()]) {
+					child.dispose();
 				}
 			}
-			mesh.geometry?.dispose();
-			// 共享 base 材质时避免递归释放材质/纹理（否则会连带销毁共享材质）；
-			// 非共享时材质/纹理已在上方手动释放，这里只释放网格自身与子网格几何
-			mesh.dispose(false, false);
 
-			resultMesh = newMesh;
-		} else if (updateMaterial) {
-			// 仅更新材质：释放旧 base 材质（共享材质保留）与旧 overlays 子网格
-			if (mesh.material && mesh.material !== this.backgroundMaterial && !this._isMaterialUsedElsewhere(mesh.material, mesh)) {
-				const textures = mesh.material.getActiveTextures();
-				for (const tex of textures) {
-					TextureCache.release(tex);
-				}
-				mesh.material.dispose();
+			if (materials) {
+				// 统一按 load() 语义重建材质层：基底用第一个影像，其余影像重建 overlays
+				this._applyMaterials(resultMesh, materials, x, y, z);
 			}
-			for (const child of [...mesh.getChildMeshes()]) {
-				if (child.material) {
-					const textures = child.material.getActiveTextures();
-					for (const tex of textures) {
-						TextureCache.release(tex);
-					}
-					child.material.dispose();
-				}
-				child.dispose();
-			}
-		}
-
-		if (materials) {
-			// 统一按 load() 语义重建材质层：基底用第一个影像，其余影像重建 overlays
-			this._applyMaterials(resultMesh, materials, x, y, z);
+		} finally {
+			this._releaseSlot();
 		}
 
 		return resultMesh;
@@ -353,13 +330,7 @@ export class TileLoader implements ITileLoader {
 	 * @param y - 瓦片 Y 坐标
 	 * @param z - 瓦片层级
 	 */
-	private _applyMaterials(
-		mesh: Mesh,
-		materials: Material[],
-		x: number,
-		y: number,
-		z: number
-	): void {
+	private _applyMaterials(mesh: Mesh, materials: Material[], x: number, y: number, z: number): void {
 		if (materials.length <= 1) {
 			// 无影像源，使用背景材质
 			mesh.material = materials[0];
@@ -368,14 +339,13 @@ export class TileLoader implements ITileLoader {
 
 		// 第一个影像设为基底材质
 		mesh.material = materials[1];
+		this._acquireMaterial(materials[1]);
 
 		// 其余影像创建覆盖层（child of 基底网格）
 		for (let i = 2; i < materials.length; i++) {
-			const overlay = TileGeometry.createFlatTile(
-				`tile-${z}-${x}-${y}-overlay-${i}`,
-				this._scene
-			);
+			const overlay = TileGeometry.createFlatTile(`tile-${z}-${x}-${y}-overlay-${i}`, this._scene);
 			overlay.material = materials[i];
+			this._acquireMaterial(materials[i]);
 			// 微小 Y 偏移防止 z-fighting（局部空间，会被父瓦片缩放放大）
 			overlay.position.y = 0.0001 * i;
 			overlay.setParent(mesh);
@@ -384,38 +354,125 @@ export class TileLoader implements ITileLoader {
 	}
 
 	/**
-	 * 检查材质是否被其他网格引用（用于避免 dispose 共享材质）
-	 * @param material - 待检查的材质
-	 * @param excludeMesh - 排除的网格（通常是正在更新的网格）
-	 * @returns 是否被其他网格引用
-	 */
-	private _isMaterialUsedElsewhere(material: Material, excludeMesh: Mesh): boolean {
-		return this._scene.meshes.some((m) => m !== excludeMesh && m.material === material);
-	}
-
-	/**
-	 * 卸载瓦片数据
+	 * 卸载瓦片数据（按引用计数释放，见 releaseMesh）
 	 * @param mesh - 要卸载的瓦片网格
 	 */
 	public unload(mesh: Mesh): void {
-		if (mesh.material && mesh.material !== this.backgroundMaterial) {
-			const textures = mesh.material.getActiveTextures();
-			for (const tex of textures) {
-				TextureCache.release(tex);
-			}
-			mesh.material.dispose();
-		}
-		for (const child of mesh.getChildMeshes()) {
-			if (child.material) {
-				const textures = child.material.getActiveTextures();
-				for (const tex of textures) {
-					TextureCache.release(tex);
-				}
-				child.material.dispose();
-			}
-		}
+		this.releaseMesh(mesh);
+	}
+
+	/**
+	 * 按引用计数释放瓦片网格（材质/纹理/几何统一收口）。
+	 * 基底材质 + 多影像覆盖层材质逐个 release：count 归零才 dispose（材质与其纹理），
+	 * count > 0 表示仍被其他瓦片共享（如插件直接挂载的共享材质），保留。
+	 * @param mesh - 要释放的瓦片网格
+	 */
+	public releaseMesh(mesh: Mesh): void {
+		if (!mesh) return;
+		this._releaseMaterialsFromMesh(mesh);
 		mesh.geometry?.dispose();
 		mesh.dispose();
+	}
+
+	/** 释放网格所有材质（基底 + 覆盖层），不释放网格本身（仅更新材质时复用网格） */
+	private _releaseMaterialsFromMesh(mesh: Mesh): void {
+		for (const child of mesh.getChildMeshes()) {
+			this._releaseMaterial(child.material, child);
+		}
+		this._releaseMaterial(mesh.material, mesh);
+	}
+
+	/** 材质是否被多个瓦片共享（count > 1）；背景材质恒共享（loader 永久持有） */
+	public isMaterialShared(material: Material): boolean {
+		if (material === this.backgroundMaterial) {
+			return true;
+		}
+		return (this._materialUsers.get(material) ?? 0) > 1;
+	}
+
+	/** 瓦片持有材质：+1（背景材质不计数，由 loader 永久持有） */
+	private _acquireMaterial(material: Material | null | undefined): void {
+		if (!material || material === this.backgroundMaterial) {
+			return;
+		}
+		this._materialUsers.set(material, (this._materialUsers.get(material) ?? 0) + 1);
+	}
+
+	/**
+	 * 瓦片释放材质：−1；归零时释放材质引用的纹理（交还缓存）并 dispose 材质。
+	 * 背景材质由 loader 永久持有，不参与计数。
+	 * @param excludeMesh 正在释放的网格（未跟踪材质回退 O(n) 扫描时排除自身，
+	 *                    避免误判「仍在被自己使用」而泄漏）
+	 */
+	private _releaseMaterial(material: Material | null | undefined, excludeMesh?: AbstractMesh | null): void {
+		if (!material || material === this.backgroundMaterial) {
+			return;
+		}
+		const before = this._materialUsers.get(material) ?? 0;
+		// debug 断言：refcount 与一次 O(n) 扫描一致（含正在释放的网格——每次持有对应一个
+		// 场景网格），防插件直接挂材质导致漏计。仅 debug>=2 时开启，热路径零开销。
+		if (this.debug >= 2) {
+			const actual = this._scene.meshes.filter((m) => m.material === material).length;
+			if (before !== actual) {
+				console.warn(`[TileLoader] material refcount mismatch (tracked=${before}, actual=${actual}): ${material.name}`);
+			}
+		}
+		if (before <= 0) {
+			// 未跟踪的材质（插件/外部直接挂载，未走 _applyMaterials 计数）：按单引用释放。
+			// 兜底：若仍被其他网格使用（共享材质），保留——由插件/其他持有者管理，
+			// 对齐旧实现的 _isSharedMaterial 排除自身语义。
+			const stillUsed = this._scene.meshes.some((m) => m !== excludeMesh && m.material === material);
+			if (stillUsed) {
+				return;
+			}
+			this._disposeMaterial(material);
+			return;
+		}
+		const n = before - 1;
+		if (n <= 0) {
+			this._materialUsers.delete(material);
+			this._disposeMaterial(material);
+		} else {
+			this._materialUsers.set(material, n);
+		}
+	}
+
+	/** 释放材质及其引用的纹理（交还缓存供复用） */
+	private _disposeMaterial(material: Material): void {
+		const textures = material.getActiveTextures();
+		for (const tex of textures) {
+			this._textureCache.release(tex);
+		}
+		material.dispose();
+	}
+
+	/** 地图持有本 loader：+1（背景材质/资源生命周期由最后一个持有者释放） */
+	public retain(): void {
+		this._mapUsers++;
+	}
+
+	/** 地图释放本 loader：引用归零时 dispose（释放背景材质与残留共享材质） */
+	public release(): void {
+		this._mapUsers--;
+		if (this._mapUsers <= 0) {
+			this.dispose();
+		}
+	}
+
+	/** 释放 loader 资源：背景材质 + 残留共享材质（正常路径下瓦片已全部 releaseMesh） */
+	public dispose(): void {
+		if (this._disposed) {
+			return;
+		}
+		this._disposed = true;
+		if (this.backgroundMaterial) {
+			this.backgroundMaterial.dispose();
+		}
+		// 兜底：仍有引用残留的共享材质直接释放（纹理留在 Engine 作用域缓存，不清理）
+		for (const material of this._materialUsers.keys()) {
+			material.dispose();
+		}
+		this._materialUsers.clear();
 	}
 
 	/**
@@ -451,6 +508,7 @@ export class TileLoader implements ITileLoader {
 						source: this._demSource,
 						scene: this._scene,
 						projection: this._projection,
+						cache: this._textureCache,
 					});
 					// loader 返回 undefined（无 URL 等跳过）：回退平瓦片
 					if (geometry) {
@@ -499,9 +557,7 @@ export class TileLoader implements ITileLoader {
 
 		// 过滤符合条件的影像源（层级 >= minLevel 且与数据源边界相交）
 		const sources = this._imgSource.filter(
-			source =>
-				coords.z >= source.minLevel &&
-				this._intersectsBounds(source, coords.bounds)
+			(source) => coords.z >= source.minLevel && this._intersectsBounds(source, coords.bounds)
 		);
 
 		// 加载每个数据源的材质：按 dataType 分发到材质加载器（内置 image/mvt + 插件）。
@@ -514,6 +570,7 @@ export class TileLoader implements ITileLoader {
 					source,
 					scene: this._scene,
 					projection: this._projection,
+					cache: this._textureCache,
 				});
 				// loader 返回 undefined（URL 缺失/纹理加载失败/层级不符）：静默跳过该源
 				if (material) {
@@ -535,10 +592,7 @@ export class TileLoader implements ITileLoader {
 	 * @param tileBounds - 瓦片投影边界
 	 * @returns 是否相交
 	 */
-	private _intersectsBounds(
-		source: ISource,
-		tileBounds: [number, number, number, number]
-	): boolean {
+	private _intersectsBounds(source: ISource, tileBounds: [number, number, number, number]): boolean {
 		if (!source._projectionBounds) {
 			return true; // 如果数据源没有设置边界，默认相交
 		}

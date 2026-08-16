@@ -23,20 +23,13 @@
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 
 import type { ISource } from '../source/ISource.js';
-import type {
-	ITileGeometryLoader,
-	TileSourceLoadParamsType,
-	ITileLoaderInfo,
-} from './ITileLoaders.js';
+import type { ITileGeometryLoader, TileSourceLoadParamsType, ITileLoaderInfo } from './ITileLoaders.js';
 import { TileGeometry, getBoundarySkirtEdges } from '../geometry/TileGeometry.js';
 import { resolveMartiniMaxError } from '../geometry/terrainError.js';
 import { TerrainRGBParser } from './TerrainRGBLoader.js';
 import { TerrainWorkerPool } from './WorkerPool.js';
 import { LercTerrainLoader } from './LercTerrainLoader.js';
-import {
-	QuantizedMeshLoader,
-	QuantizedMeshTileData,
-} from './QuantizedMeshLoader.js';
+import { QuantizedMeshLoader, QuantizedMeshTileData } from './QuantizedMeshLoader.js';
 
 /** 共享的瓦片 UV 边缘出血量（与 TileLoader 一致） */
 const TILE_UV_BLEED = 2 / 256;
@@ -102,16 +95,14 @@ export class TerrainRGBGeometryLoader implements ITileGeometryLoader<Mesh> {
 		const imgData = await this._loadImageData(url);
 
 		// 使用 Worker 池或主线程解析地形数据
-		let dem = this.useWorkerParse
-			? await TerrainWorkerPool.parse(imgData)
-			: TerrainRGBParser.parse(imgData);
+		let dem = this.useWorkerParse ? await TerrainWorkerPool.parse(imgData) : TerrainRGBParser.parse(imgData);
 
 		if (k > 0) {
 			dem = this._cropDemQuadrant(
 				dem,
 				k,
 				x - demX * shift, // 本瓦片在父瓦片内的列象限（向东递增）
-				y - demY * shift  // 行象限（向南递增）
+				y - demY * shift // 行象限（向南递增）
 			);
 		}
 
@@ -128,10 +119,7 @@ export class TerrainRGBGeometryLoader implements ITileGeometryLoader<Mesh> {
 		// 检查 DEM 数据是否为 2^n+1 尺寸（Martini 要求）
 		const gridSize = Math.floor(Math.sqrt(dem.length));
 		const isPerfectSquare = gridSize * gridSize === dem.length;
-		const isMartiniCompatible =
-			this.useMartini &&
-			isPerfectSquare &&
-			((gridSize - 1) & (gridSize - 2)) === 0; // 2^n+1 检测
+		const isMartiniCompatible = this.useMartini && isPerfectSquare && ((gridSize - 1) & (gridSize - 2)) === 0; // 2^n+1 检测
 
 		if (isMartiniCompatible) {
 			// 使用 Martini RTIN 自适应三角网
@@ -155,13 +143,7 @@ export class TerrainRGBGeometryLoader implements ITileGeometryLoader<Mesh> {
 			if (this.debug > 0) {
 				console.warn(`DEM data is not square (length=${dem.length}), fallback to flat tile.`);
 			}
-			return TileGeometry.createFlatTile(
-				`tile-${z}-${x}-${y}-geometry`,
-				scene,
-				1,
-				1,
-				TILE_UV_BLEED
-			);
+			return TileGeometry.createFlatTile(`tile-${z}-${x}-${y}-geometry`, scene, 1, 1, TILE_UV_BLEED);
 		}
 
 		// 回退：使用固定分段网格
@@ -179,19 +161,16 @@ export class TerrainRGBGeometryLoader implements ITileGeometryLoader<Mesh> {
 			}
 		}
 
-		return TileGeometry.createTile(
-			`tile-${z}-${x}-${y}-geometry`,
-			{
-				scene,
-				width: 1,
-				height: 1,
-				segmentsW: segments,
-				segmentsH: segments,
-				heights,
-				skirtHeight,
-				worldScale,
-			}
-		);
+		return TileGeometry.createTile(`tile-${z}-${x}-${y}-geometry`, {
+			scene,
+			width: 1,
+			height: 1,
+			segmentsW: segments,
+			segmentsH: segments,
+			heights,
+			skirtHeight,
+			worldScale,
+		});
 	}
 
 	/**
@@ -340,9 +319,8 @@ export class LercGeometryLoader implements ITileGeometryLoader<Mesh> {
 		// （minY 为北，与 DEM 第 0 行在北一致；k=0 未超采样则全范围）
 		const subX = x - demX * shift;
 		const subY = y - demY * shift;
-		const clipBounds: [number, number, number, number] = k > 0
-			? [subX / shift, subY / shift, (subX + 1) / shift, (subY + 1) / shift]
-			: [0, 0, 1, 1];
+		const clipBounds: [number, number, number, number] =
+			k > 0 ? [subX / shift, subY / shift, (subX + 1) / shift, (subY + 1) / shift] : [0, 0, 1, 1];
 
 		// DEM 高程为原始米制（与 terrain-rgb 一致），无需缩放
 		const heightScale = 1;
@@ -443,8 +421,7 @@ export class QuantizedMeshGeometryLoader implements ITileGeometryLoader<Mesh> {
 		// 2. 请求并解码所有服务瓦片 TIN，合并为一个 TIN
 		// 请求头由 source 提供（外部配置的 Accept 协商头 + Cesium ion 认证头等）
 		const requestHeaders = qmSource.getRequestHeaders?.();
-		const requestInit =
-			requestHeaders && Object.keys(requestHeaders).length ? { headers: requestHeaders } : undefined;
+		const requestInit = requestHeaders && Object.keys(requestHeaders).length ? { headers: requestHeaders } : undefined;
 		// 字节序由 source 显式指定（Mars3D 等服务为小端），不做自动检测
 		const littleEndian = qmSource.littleEndian ?? false;
 
@@ -452,7 +429,10 @@ export class QuantizedMeshGeometryLoader implements ITileGeometryLoader<Mesh> {
 		const latArr: number[] = [];
 		const heightArr: number[] = [];
 		const triArr: number[] = [];
-		let lonMin = Infinity, lonMax = -Infinity, latMin = Infinity, latMax = -Infinity;
+		let lonMin = Infinity,
+			lonMax = -Infinity,
+			latMin = Infinity,
+			latMax = -Infinity;
 
 		for (const c of coordsList) {
 			const response = await fetch(source.getUrl(c.x, c.y, c.z), requestInit);

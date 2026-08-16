@@ -1,0 +1,62 @@
+{
+	"type": "FeatureCollection",
+	"features": [
+		{
+			"type": "Feature",
+			"properties": { "name": "若尔盖湿地", "type": "wetland" },
+			"geometry": {
+				"type": "Polygon",
+				"coordinates": [
+					[
+						[102.2, 34.4],
+						[103.6, 34.4],
+						[103.6, 33.2],
+						[102.2, 33.2],
+						[102.2, 34.4]
+					]
+				]
+			}
+		},
+		{
+			"type": "Feature",
+			"properties": { "name": "兰州-若尔盖 示意道路", "type": "road" },
+			"geometry": {
+				"type": "LineString",
+				"coordinates": [
+					[103.83, 36.06],
+					[103.2, 35.6],
+					[102.9, 35.0],
+					[103.2, 34.0],
+					[103.9, 33.4],
+					[104.1, 33.2],
+					[103.8, 30.7]
+				]
+			}
+		},
+		{
+			"type": "Feature",
+			"properties": { "name": "兰州", "type": "city" },
+			"geometry": { "type": "Point", "coordinates": [103.83, 36.06] }
+		},
+		{
+			"type": "Feature",
+			"properties": { "name": "临夏", "type": "city" },
+			"geometry": { "type": "Point", "coordinates": [103.2, 35.6] }
+		},
+		{
+			"type": "Feature",
+			"properties": { "name": "合作", "type": "city" },
+			"geometry": { "type": "Point", "coordinates": [102.9, 35.0] }
+		},
+		{
+			"type": "Feature",
+			"properties": { "name": "若尔盖", "type": "city" },
+			"geometry": { "type": "Point", "coordinates": [102.9, 33.6] }
+		},
+		{
+			"type": "Feature",
+			"properties": { "name": "迭部", "type": "city" },
+			"geometry": { "type": "Point", "coordinates": [103.2, 34.0] }
+		}
+	]
+}
