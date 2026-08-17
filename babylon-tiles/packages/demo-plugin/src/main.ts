@@ -43,7 +43,8 @@ import {
 } from '@babylon-tile/plugin';
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
-const engine = new Engine(canvas, true);
+// 大世界渲染：Float64 CPU 矩阵 + 浮点原点，解决平面地图大坐标精度问题。
+const engine = new Engine(canvas, true, { useLargeWorldRendering: true });
 
 // ======================== 常量 ========================
 const BACK_COLOR = new Color4(0.859, 0.941, 1.0, 1.0); // 0xdbf0ff 浅天蓝

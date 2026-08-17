@@ -36,14 +36,14 @@ importers:
         specifier: workspace:*
         version: link:../plugin
       '@babylonjs/core':
-        specifier: ^7.8.1
-        version: 7.54.3
+        specifier: ^9.21.2
+        version: 9.21.2
       '@babylonjs/gui':
-        specifier: ^7.8.1
-        version: 7.54.3(@babylonjs/core@7.54.3)
+        specifier: ^9.21.2
+        version: 9.21.2(@babylonjs/core@9.21.2)
       '@babylonjs/loaders':
-        specifier: ^7.8.1
-        version: 7.54.3(@babylonjs/core@7.54.3)(babylonjs-gltf2interface@7.54.3)
+        specifier: ^9.21.2
+        version: 9.21.2(@babylonjs/core@9.21.2)(babylonjs-gltf2interface@7.54.3)
     devDependencies:
       typescript:
         specifier: ^5.3.3
@@ -61,8 +61,8 @@ importers:
         specifier: workspace:*
         version: link:../plugin
       '@babylonjs/core':
-        specifier: ^7.8.1
-        version: 7.54.3
+        specifier: ^9.21.2
+        version: 9.21.2
     devDependencies:
       typescript:
         specifier: ^5.3.3
@@ -74,11 +74,11 @@ importers:
   packages/lib:
     dependencies:
       '@babylonjs/core':
-        specifier: ^7.8.1
-        version: 7.54.3
+        specifier: ^9.21.2
+        version: 9.21.2
       '@babylonjs/loaders':
-        specifier: ^7.8.1
-        version: 7.54.3(@babylonjs/core@7.54.3)(babylonjs-gltf2interface@7.54.3)
+        specifier: ^9.21.2
+        version: 9.21.2(@babylonjs/core@9.21.2)(babylonjs-gltf2interface@7.54.3)
       '@mapbox/vector-tile':
         specifier: ^2.0.3
         version: 2.0.5
@@ -108,8 +108,8 @@ importers:
         specifier: workspace:*
         version: link:../lib
       '@babylonjs/core':
-        specifier: ^7.8.1
-        version: 7.54.3
+        specifier: ^9.21.2
+        version: 9.21.2
       '@mapbox/vector-tile':
         specifier: ^2.0.3
         version: 2.0.5
@@ -161,19 +161,19 @@ packages:
     resolution: {integrity: sha512-0ZrskXVEHSWIqZM/sQZ4EV3jZJXRkio/WCxaqKZP1g//CEWEPSfeZFcms4XeKBCHU0ZKnIkdJeU/kF+eRp5lBg==}
     engines: {node: '>=6.9.0'}
 
-  '@babylonjs/core@7.54.3':
-    resolution: {integrity: sha512-P5ncXVd8GEUJLhwloP9V0oVwQYIrvZztguVeLlvd5Rx+9aQnenKjpV8auJ6SRsUlAmNZU4pFTKzwF6o2EUfhAw==}
+  '@babylonjs/core@9.21.2':
+    resolution: {integrity: sha512-y4brONcZ4X5rfoiLqTdd9jSZzyIeJ+zHhvN6qgDCpgVIyM2sJlCouLBSvNn+Kl7jIxmzJhIvbBvUIS/sx8jFUw==}
 
-  '@babylonjs/gui@7.54.3':
-    resolution: {integrity: sha512-fsPJpfMWXliEFXhVYk9eqRjT1JB+Zv0TtSDs9QWdUKhVexCyaeDCcMS7j+YkQhupOHpR8HBYXlsP/7je4NmbDg==}
+  '@babylonjs/gui@9.21.2':
+    resolution: {integrity: sha512-cpUx+L932cYMtuDIByqUodzsOx9KcuEmjsD285noksV5jym3AfM19rNdf5lpCmh74ywKODtlLN6kK6aqmdwoKw==}
     peerDependencies:
-      '@babylonjs/core': ^7.0.0
+      '@babylonjs/core': ^9.0.0
 
-  '@babylonjs/loaders@7.54.3':
-    resolution: {integrity: sha512-RBPmOsaMTxi6Ga08ueLTm6Tnvx/l2nNQigucubvrngZ7muwn5/ubfcStckkI1c0qvhR1+/FFlD54do7gZ1pnsQ==}
+  '@babylonjs/loaders@9.21.2':
+    resolution: {integrity: sha512-ZPfVpNBbxZhL3Xns355gyIFBfEgq4qGAbW/Rf5rwvkivTbQcKQRTmp+GTieTdPtEcPGBTSBVFnr/LioKEmJlvQ==}
     peerDependencies:
-      '@babylonjs/core': ^7.0.0
-      babylonjs-gltf2interface: ^7.0.0
+      '@babylonjs/core': ^9.0.0
+      babylonjs-gltf2interface: ^9.0.0
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -1356,15 +1356,15 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
-  '@babylonjs/core@7.54.3': {}
+  '@babylonjs/core@9.21.2': {}
 
-  '@babylonjs/gui@7.54.3(@babylonjs/core@7.54.3)':
+  '@babylonjs/gui@9.21.2(@babylonjs/core@9.21.2)':
     dependencies:
-      '@babylonjs/core': 7.54.3
+      '@babylonjs/core': 9.21.2
 
-  '@babylonjs/loaders@7.54.3(@babylonjs/core@7.54.3)(babylonjs-gltf2interface@7.54.3)':
+  '@babylonjs/loaders@9.21.2(@babylonjs/core@9.21.2)(babylonjs-gltf2interface@7.54.3)':
     dependencies:
-      '@babylonjs/core': 7.54.3
+      '@babylonjs/core': 9.21.2
       babylonjs-gltf2interface: 7.54.3
 
   '@esbuild/aix-ppc64@0.21.5':

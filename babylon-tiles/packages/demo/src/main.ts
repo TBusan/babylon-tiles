@@ -38,7 +38,9 @@ import { GeoJSONSource, GroundGroup, GeoJSONLoader } from '@babylon-tile/plugin'
 registerImgLoader(new GeoJSONLoader());
 
 const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
-const engine = new Engine(canvas, true);
+// 大世界渲染：Float64 CPU 矩阵 + 浮点原点（着色器 uniform/attribute 相对相机偏移），
+// 解决平面地图 ±2e7 米坐标下的位置抖动与瓦片接缝精度问题。
+const engine = new Engine(canvas, true, { useLargeWorldRendering: true });
 
 // ======================== 常量 ========================
 const BACK_COLOR = new Color4(0.859, 0.941, 1.0, 1.0); // 0xdbf0ff 浅天蓝

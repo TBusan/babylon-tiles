@@ -25,6 +25,15 @@ import type { Scene } from '@babylonjs/core/scene';
 export type ControlsMode = 'MAP' | 'ORBIT';
 
 /**
+ * Babylon 9 相机输入映射器最小接口（避免直接依赖 core 内部类，兼容旧版本兜底）。
+ * 对应 CameraMovement.input: InputMapper<T>。
+ */
+interface InputMapperLike {
+	resetInputMap(): void;
+	setInteraction(source: string, conditions: { button?: number }, interaction: string): boolean;
+}
+
+/**
  * 瓦片地图相机控制器
  *
  * 包装 ArcRotateCamera，把 three-tile TileMapControls 的动态控制逻辑移植到
@@ -56,6 +65,15 @@ export class TileMapControls {
 	/** 相机最高高度（世界 Y），高于该值时下压。默认 Infinity（不限） */
 	public maxHeight = Infinity;
 
+	/** 是否启用动态 near（随相机离地高度调整近裁剪面，改善深度精度）。默认 true */
+	public dynamicNear = true;
+
+	/** 动态 near 系数：near = max(minNear, 离地高度 × nearFactor)。0.01 = 100× 安全余量 */
+	public nearFactor = 0.01;
+
+	/** 动态 near 下限（世界单位，米） */
+	public minNear = 0.5;
+
 	/**
 	 * 地表高度查询回调（世界坐标 XZ → 高度 Y）。用于结合地形防穿地：
 	 * 每帧取 minHeight = max(this.minHeight, groundHeightAt(x, z))。
@@ -71,6 +89,9 @@ export class TileMapControls {
 
 	private _controlsMode: ControlsMode = 'MAP';
 	private _roll = 0;
+
+	/** 本帧地表高度缓存（_update 内查一次，near 与限高共用，避免 groundHeightAt 重复查询） */
+	private _groundYThisFrame = 0;
 
 	/** 每帧动态调整回调（存引用以便 dispose 注销） */
 	private readonly _onBeforeRender = (): void => {
@@ -95,7 +116,7 @@ export class TileMapControls {
 		camera.upperAlphaLimit = Infinity;
 		camera.lowerBetaLimit = this.lowerBetaLimit;
 		camera.upperBetaLimit = this.mapMaxPolarAngle;
-		camera.minZ = 1; // near 固定小值（动态 near 有一帧延迟，快速缩放会裁掉地面）
+		camera.minZ = this.minNear; // near 初始值，每帧由动态 near 调整
 		camera.maxZ = 5e7;
 		camera.panningAxis = new Vector3(1, 0, 1); // 只在 XZ 水平面平移（screenSpacePanning=false）
 		camera.panningSensibility = 2500 / Math.max(camera.radius, 1);
@@ -103,7 +124,10 @@ export class TileMapControls {
 		camera.panningInertia = 0.85;
 
 		// 鼠标按键映射（MAP 默认：左键平移、右键旋转）
-		camera.attachControl(true, true, 0);
+		// Babylon 9 起按钮→动作映射由 camera.movement.input 的 inputMap 管理，
+		// 三参 attachControl 的 useCtrlForPanning/panningMouseButton 语义已变化，
+		// 此处只传 noPreventDefault，按键映射交给 _applyControlsMode 显式设置。
+		camera.attachControl(true);
 		this._applyControlsMode();
 
 		// 每帧动态调整相机参数
@@ -203,12 +227,27 @@ export class TileMapControls {
 
 	/**
 	 * 应用控制模式（切换鼠标按键映射）
-	 * Babylon 以 _panningMouseButton 决定平移按钮：0=左键平移（右键自动旋转），
-	 * 2=右键平移（左键自动旋转）。无需重新 attachControl。
+	 * Babylon 9 起按钮→动作映射由 camera.movement.input 的 inputMap 管理：
+	 * MAP 模式 = 左键平移(button 0 → pan) + 右键旋转(button 2 → rotate)；
+	 * ORBIT 模式 = 左键旋转 + 右键平移。先 resetInputMap 恢复默认映射再覆盖，
+	 * 避免遗留默认条目（如 ctrl+左键 pan）与覆盖条目冲突。旧版本无 movement.input
+	 * 时回退到 _panningMouseButton 赋值。
 	 */
 	private _applyControlsMode(): void {
-		const panButton = this._controlsMode === 'MAP' ? 0 : 2;
-		(this._camera as unknown as { _panningMouseButton: number })._panningMouseButton = panButton;
+		const input = (this._camera as { movement?: { input?: InputMapperLike } }).movement?.input;
+		if (input?.setInteraction) {
+			input.resetInputMap();
+			if (this._controlsMode === 'MAP') {
+				input.setInteraction('pointer', { button: 0 }, 'pan');
+				input.setInteraction('pointer', { button: 2 }, 'rotate');
+			} else {
+				input.setInteraction('pointer', { button: 0 }, 'rotate');
+				input.setInteraction('pointer', { button: 2 }, 'pan');
+			}
+		} else {
+			const panButton = this._controlsMode === 'MAP' ? 0 : 2;
+			(this._camera as unknown as { _panningMouseButton: number })._panningMouseButton = panButton;
+		}
 	}
 
 	/**
@@ -241,13 +280,30 @@ export class TileMapControls {
 		const maxBeta = Math.min(Math.pow(1e7 / dist, 2), this.mapMaxPolarAngle);
 		cam.upperBetaLimit = Math.max(maxBeta, cam.lowerBetaLimit ?? this.lowerBetaLimit);
 
-		// 5. 动态 far（near 固定为 1）：far = clamp((dist/(beta/1.5))*7, 2e4, maxDistance*2)
-		cam.maxZ = Math.min(Math.max((dist / (beta / 1.5)) * 7, 2e4), this.maxDistance * 2);
+		// 5. 地表高度（每帧查一次，动态 near 与限高共用，避免 groundHeightAt 重复查询）
+		this._groundYThisFrame = 0;
+		if (this.groundHeightAt) {
+			this._groundYThisFrame = this.groundHeightAt(cam.position.x, cam.position.z);
+		}
 
-		// 6. 限高：钳制相机与 target 高度（防穿地/防飞过头）
+		// 6. 动态 near：near = max(minNear, 离地高度 × nearFactor)。
+		//    近裁剪面随相机离地高度提升，缩小 far/near 比，改善深度缓冲精度
+		//    （相机高 6km 时 near 由 1→60m，深度精度由 ~2.1m/步 → ~3.6cm/步）。
+		//    nearFactor=0.01 提供 100× 安全余量，避免快速缩放时动态 near 裁掉地面。
+		if (this.dynamicNear) {
+			const groundDist = Math.max(1, cam.position.y - this._groundYThisFrame);
+			cam.minZ = Math.max(this.minNear, groundDist * this.nearFactor);
+		}
+
+		// 7. 动态 far：far = clamp((dist/(beta/1.5))*7, 2e4, maxDistance*2)，与 near 保底 ×100
+		//    （×100 而非 ×1000：高空时 far 被顶得过大反而劣化深度精度）
+		const far = Math.min(Math.max((dist / (beta / 1.5)) * 7, 2e4), this.maxDistance * 2);
+		cam.maxZ = Math.max(far, cam.minZ * 100);
+
+		// 8. 限高：钳制相机与 target 高度（防穿地/防飞过头）
 		this._applyHeightClamp();
 
-		// 7. 横滚：绕当前视线轴旋转 upVector
+		// 9. 横滚：绕当前视线轴旋转 upVector
 		this._applyRoll();
 	}
 
@@ -258,7 +314,8 @@ export class TileMapControls {
 		const cam = this._camera;
 		let minH = this.minHeight;
 		if (this.groundHeightAt) {
-			minH = Math.max(minH, this.groundHeightAt(cam.position.x, cam.position.z));
+			// 复用 _update 里本帧已查好的地表高度，避免重复调用 groundHeightAt
+			minH = Math.max(minH, this._groundYThisFrame);
 		}
 
 		if (cam.position.y < minH) cam.position.y = minH;

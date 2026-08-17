@@ -11,9 +11,9 @@
 	"dependencies": {
 		"@babylon-tile/lib": "workspace:*",
 		"@babylon-tile/plugin": "workspace:*",
-		"@babylonjs/core": "^7.8.1",
-		"@babylonjs/loaders": "^7.8.1",
-		"@babylonjs/gui": "^7.8.1"
+		"@babylonjs/core": "^9.21.2",
+		"@babylonjs/loaders": "^9.21.2",
+		"@babylonjs/gui": "^9.21.2"
 	},
 	"devDependencies": {
 		"typescript": "^5.3.3",

@@ -47,8 +47,8 @@
 	},
 	"homepage": "https://github.com/your-repo/babylon-tile#readme",
 	"dependencies": {
-		"@babylonjs/core": "^7.8.1",
-		"@babylonjs/loaders": "^7.8.1",
+		"@babylonjs/core": "^9.21.2",
+		"@babylonjs/loaders": "^9.21.2",
 		"lerc": "^4.2.0",
 		"@mapbox/vector-tile": "^2.0.3",
 		"pbf": "^4.0.1"
